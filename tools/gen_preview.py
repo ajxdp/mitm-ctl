@@ -8,8 +8,9 @@ import sys
 import json
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-TMP = "_prev_tmp"
+# 脚本在 tools/ 下，仓库根在上一级
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TMP = os.path.join(HERE, "_prev_tmp")
 
 
 def samples():
@@ -37,7 +38,7 @@ def samples():
                      "tags": ["苏绣", "人物"], "hot": 1207, "free": False}],
                     "total": 2, "hasMore": False},
                 "timestamp": 1789527308}, ensure_ascii=False, indent=2),
-            "resp_len": 263460, "resp_truncated": True,
+            "resp_len": 263460, "resp_captured": 2097152, "resp_truncated": True,
             "resp_ctype": "application/json;charset=UTF-8",
             "resp_cjk": ["获取成功", "申庭教育获多家权威媒体深度报道", "新华日报", "苏绣技艺传承人访谈"],
         },

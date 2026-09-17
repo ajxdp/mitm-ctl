@@ -26,7 +26,7 @@ fi
 # ---------------------------------------------------------------- 默认配置（幂等）
 [ -f "$CONF/mode" ]        || echo "all"     > "$CONF/mode"
 [ -f "$CONF/domains.txt" ] || :              > "$CONF/domains.txt"
-[ -f "$CONF/logcfg" ]      || printf "2097152\n400\n" > "$CONF/logcfg"
+[ -f "$CONF/logcfg" ]      || printf "8388608\n400\n" > "$CONF/logcfg"
 [ -f "$CONF/autoclose" ]   || printf "0\n5\n" > "$CONF/autoclose"   # 容器由编排托管，不自动停
 [ -f "$CONF/log-enable" ]  || echo "1"       > "$CONF/log-enable"
 [ -f "$CONF/ifaces" ]      || :              > "$CONF/ifaces"

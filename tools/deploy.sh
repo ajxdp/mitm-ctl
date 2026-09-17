@@ -27,10 +27,12 @@ say "统一换行为 LF"
 if command -v python3 >/dev/null 2>&1; then
     python3 - <<'PYEOF'
 import os
-BIN = (".pcap", ".pcapng", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".gz", ".zip", ".pdf")
+BIN = (".pcap", ".pcapng", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".gz", ".zip",
+       ".pdf", ".ipk", ".exe", ".dll", ".pyd", ".so", ".woff", ".woff2")
+SKIP_DIR = (".git", "__pycache__", "dist", "dist-exe", "build", "feed", ".vscode")
 fixed = []
 for root, dirs, files in os.walk("."):
-    dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+    dirs[:] = [d for d in dirs if d not in SKIP_DIR]
     for fn in files:
         p = os.path.join(root, fn)
         if p.lower().endswith(BIN):
@@ -113,18 +115,11 @@ fi
 
 # ---------------------------------------------------------------- 5) 重启
 if [ "$RESTART" = "1" ]; then
-    say "重启服务"
-    ssh -o StrictHostKeyChecking=no "$HOST" '
-        if [ -f /etc/init.d/pktcap ]; then
-            /etc/init.d/pktcap restart >/dev/null 2>&1 || /etc/init.d/pktcap start >/dev/null 2>&1
-            /etc/init.d/mitm restart   >/dev/null 2>&1 || /etc/init.d/mitm start   >/dev/null 2>&1
-        elif command -v systemctl >/dev/null 2>&1; then
-            systemctl restart pktcap mitm >/dev/null 2>&1 || true
-        fi
-        sleep 4
-        echo "   页面: $(for u in / /body /panel /packets /doc /cert; do printf "%s=%s " $u $(curl -s -o /dev/null -w "%{http_code}" -u root:root http://127.0.0.1:7690$u); done)"
-        echo "   进程: mitm=$(ps w 2>/dev/null | grep -v grep | grep -c mitm_proxy) pktcap=$(ps w 2>/dev/null | grep -v grep | grep -c pktcap_server)"
-    '
+    say "重启服务（停干净→等端口释放→起→校验单实例）"
+    # 设备侧重启脚本单独放一个文件：逻辑分层清晰，也方便本地 sh -n 检查
+    ssh -o StrictHostKeyChecking=no "$HOST" 'cat > /tmp/svc-restart.sh' < "$HERE/tools/restart-svc.sh"
+    ssh -o StrictHostKeyChecking=no "$HOST" 'sh /tmp/svc-restart.sh 2>&1'
 fi
 
 say "完成"
+

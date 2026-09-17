@@ -195,9 +195,10 @@ docker compose down               # 数据在命名卷 mitm-data，别删（CA �
 | `/etc/squid/mitm-targets` | 抓哪些设备（IP 或 CIDR） | `10.0.0.0/24` |
 | `auto-bypass.txt` | 自动放行名单（证书固定自愈） | 内置主流 App |
 | `autoclose` | 无人监听自动关闭：第 1 行 `1/0`，第 2 行分钟数 | `1` / `5` |
-| `logcfg` | 第 1 行字节上限，第 2 行保留条数 | 2MB / 400 |
+| `logcfg` | 第 1 行字节上限，第 2 行保留条数 | 8MB / 400 |
 | `log-enable` | 日志总开关 `1/0`（**关＝不记录也不抓正文**） | `1` |
 | 图片缓存目录 | `/tmp/mitm-blobs/`（抓到的图片/PDF/文档，`MITM_BLOB_DIR`） | 单个 ≤1MB · 总量 ≤16MB，超了删最旧的 |
+| `logcfg` 第 1 行 | **记录文件字节上限** | 8MB（超了丢最旧的，见下方说明） |
 
 ### 服务与脚本
 
@@ -238,16 +239,27 @@ ssh root@10.0.0.1 'cat > /usr/share/pktcap/index.html'    < index.html
 ssh root@10.0.0.1 'md5sum /usr/share/pktcap/pktcap_server.py'
 
 # 4) 重启（改了 py 必须重启；只改 html 刷新即可）
-ssh root@10.0.0.1 '/etc/init.d/pktcap restart; /etc/init.d/mitm restart; sleep 3'
+#    推荐一条命令走完全流程（归一化 LF → 语法自检 → 上传 → md5 校验 → 重启 → 页面自检）：
+sh tools/deploy.sh root@10.0.0.1
+
+#    手动重启时别图省事用 restart：procd 的记账可能与实际脱节，旧进程成了孤儿
+#    却仍占着端口，新实例会 bind 失败进入 crash loop（页面看着还是好的，其实服务
+#    已经不受管理了）。稳妥做法是先停干净、等端口释放、再起：
+ssh root@10.0.0.1 'sh /tmp/svc-restart.sh'   # deploy.sh 会推送；末尾会打印进程数供核对
 
 # 5) 冒烟验证
 ssh root@10.0.0.1 'for u in / /body /panel /packets /doc; do printf "%s=%s\n" $u $(curl -s -u root:root -o /dev/null -w "%{http_code}" http://127.0.0.1:7690$u); done'
 ```
 
-> ⚠️ 三个反复踩过的坑：
+> ⚠️ 反复踩过的坑：
 > 1. **改了 py 不重启 = 没生效**（会白白排查半天）。
 > 2. **只重启 pktcap 不够**——改 `mitm_proxy.py` 要重启 `mitm`。
 > 3. **`cat > file` 上传偶尔静默失败**，永远比对 md5。
+> 4. **`restart` 不等于"重启成功"**——旧进程没退干净时，新实例 bind 失败进入
+>    crash loop，而页面仍由那个孤儿进程撑着，一切"看起来正常"。用
+>    `tools/restart-svc.sh`（deploy.sh 自带），它会停干净、等端口释放、起完再数一遍。
+> 5. **CRLF**：Windows 上写出的 `.sh` 常带 CRLF，拷到 busybox 上会
+>    `not found` / `set: -: invalid option`。deploy.sh 每次都先归一化。
 
 ---
 
@@ -310,6 +322,9 @@ curl -u root:root -X POST -H 'Content-Type: application/json' -d '{"action":"cle
 | **图片看不到内容** | 该条有没有 `blob` 字段 | 有＝图片已缓存，展开详情即可看到；没有＋`blob_partial`＝文件超 1MB 或分块传输，未缓存 |
 | 图片缓存占内存 | `$B/api/blob` 看 bytes | 总量上限 16MB 自动删最旧；控制台可一键清空 |
 | 代理进程没了 | `mitm-ctl status` | `mitm-ctl on` 拉起 |
+| **刚点「开启解密」几秒后又自己关了** | `logread \| grep autoclose` | 无人查看会自动关（默认 5 分钟）。**1.0.1 已修**：开启的那一刻会重新计时，之前会因为计时基准是"服务启动时刻"而刚开就关。确认版本 ≥1.0.1 |
+| **页面正常，但 `init.d/pktcap status` 说 not running** | `ps w \| grep -c pktcap_server` | procd 记账与实际脱节：旧进程成了孤儿仍占着端口，新实例 bind 失败。日志特征：`OSError: [Errno 98] Address in use` + `procd: Instance pktcap::instance1 s in a crash loop`。处理：`sh tools/restart-svc.sh`；initd 已内置启动前清理残留实例 |
+| 进程数不是 1 | `ps w \| grep -c mitm_proxy` | 正常应各 **1 个**。多于 1 说明有脱管残留 → `sh tools/restart-svc.sh` |
 | 路由器整体变慢 | `/proc/*/comm` 数进程 | 正常应只有 **2 个 python3 + 0 个 tcpdump** |
 
 排查通用三连：
@@ -326,6 +341,9 @@ for d in /proc/[0-9]*; do cat $d/comm 2>/dev/null; done | sort | uniq -c        
 
 ## 六、端口与进程（正常状态）
 
+> 健康的进程数：**pktcap_server 1 个 + mitm_proxy 1 个**（抓包时再加 1 个 tcpdump）。
+> 多于 1 个说明有脱管残留，`sh tools/restart-svc.sh` 收拾。
+
 | 端口 | 用途 |
 |---|---|
 | **7690** | Web/API（控制台、解密内容、抓包表格、`/doc`） |
@@ -336,6 +354,48 @@ for d in /proc/[0-9]*; do cat $d/comm 2>/dev/null; done | sort | uniq -c        
 正常应有：**2 个 `python3`**（`pktcap_server` + `mitm_proxy`）、**0 个 `tcpdump`**（未手动开抓包时）。
 
 > 用 `netstat -ltn | grep -E '8080|8443'` 看监听；用 `/proc/*/comm` 统计进程（**别用 `ps|grep`，会匹配到自己的命令行**）。
+
+---
+
+## 六点四、解密内容页的 JSON 查看器（行号 / 折叠）
+
+列表里点任意一行展开详情，请求体与响应体都是 **可折叠的 JSON 树**：
+
+```
+行号   三角  淡色引导线            内容
+ 1     ▼  ────────────────────  { 4 个字段 }
+ 2     ▾  ──────────────────────  "code": 1
+ 3     ▾  ──────────────────────  "msg": "获取成功"
+ 4     ▼  ──────────────────────  "data": { 3 个字段 }
+ 5     ▼  ────────────────────────  "list": [ 2 项 ]
+```
+
+- **左侧固定栏**：行号 + 折叠三角**不随层级右移**，始终在最左边；
+  用一条**淡色引导线**连到内容，**线长 = 缩进深度**，**每层换一种淡色**，一眼能看出属于哪一层。
+- **点行内任意位置都能折叠**（包括文字和三角）。正在选中文字时不会触发，
+  所以想复制内容不会被折叠打断。
+- **默认全部展开**；要收起来用面板上的「收起」，或点某一行单独折叠。
+- 面板右上角有 **「展开 / 收起 / 原始数据」**：`原始数据` 切换成纯文本（再点变回 `折叠树`）。
+- 行号从 1 开始按渲染顺序编号；大数组默认最多渲染 2000 项，超出给「… 还有 N 项，点这里全部展开」。
+
+### 正文不再截断
+
+以前记录里正文只留前 2 万字符（页面上会写"仅显示前 N 字符"）。**现在不截断了**：
+
+| 项目 | 默认 | 环境变量 |
+|---|---|---|
+| 记录里的正文字符数 | **不限**（`0` = 不额外截断） | `MITM_MAX_SNIPPET` |
+| 解码后正文的硬上限（防解压炸弹） | 8MB | `MITM_HARD_TEXT_CAP` |
+| 文本响应抓取上限（原始字节） | 2MB | `MITM_CAP_TEXT` |
+| 记录文件字节预算 | 8MB | `MITM_MAX_LOG`（也可在控制台改） |
+
+> ⚠️ **单条正文变大了，所以日志必须按字节卡**：`/tmp` 是 tmpfs（内存盘）。
+> 现在裁剪同时受「条数」和「字节」两个约束，并且**每写满预算的 1/8 就检查一次**
+> （单条可能上百 KB，等条数凑够再检查会瞬间吃掉几十 MB 内存）。
+> 想多留些就调大上限：控制台 →「日志保留与清理」，或直接改 `/etc/mitm/logcfg`。
+
+页面上的提示也改了语义：只有在**响应比我们抓到的还大**时才显示
+「内容较大，仅抓到 X」——转发给客户端的内容**始终是完整的**。
 
 ---
 

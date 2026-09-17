@@ -16,6 +16,16 @@ CONF=/etc/mitm
 has_nft() { [ -x "$NFT_SH" ] && command -v nft >/dev/null 2>&1; }
 is_proxy_mode() { [ ! -f "$CONF/tproxy" ]; }
 
+# 找出 mitm_proxy 的进程号（不依赖 ps，带 ps 的 busybox 可能没有 w 参数）
+proxy_pids() {
+	for d in /proc/[0-9]*; do
+		c=$(cat "$d/comm" 2>/dev/null) || continue
+		[ "$c" = "python3" ] || continue
+		tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q mitm_proxy && basename "$d"
+	done
+}
+proxy_running() { [ -n "$(proxy_pids)" ]; }
+
 svc_start() {
 	if [ -f /etc/init.d/mitm ] && [ -f /etc/rc.common ]; then
 		/etc/init.d/mitm start >/dev/null 2>&1
@@ -34,18 +44,44 @@ svc_stop() {
 	elif [ -f /etc/init.d/mitm ]; then
 		/etc/init.d/mitm stop >/dev/null 2>&1
 	fi
-	# 兜底：服务框架没接住时直接杀进程
-	for d in /proc/[0-9]*; do
-		c=$(cat "$d/comm" 2>/dev/null) || continue
-		[ "$c" = "python3" ] || continue
-		tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q mitm_proxy && kill "$(basename "$d")" 2>/dev/null
+	# 关键：必须等服务的 teardown 真正跑完再返回。
+	# procd 带 respawn，且 stop_service() 里会 mitm-nft.sh clear —— 如果不等它，
+	# 就会踩到两个坑：
+	#   1) 紧接着 kill 进程会被 procd 当成崩溃而重启，stop 反而停不掉；
+	#   2) 迟到的 clear 会把下一次 on 刚下发的规则抹掉（表现为"打开了但没生效"）。
+	i=0
+	while [ $i -lt 12 ]; do
+		proxy_running || return 0
+		sleep 1
+		i=$((i + 1))
 	done
+	# 框架确实没停住才兜底直接杀
+	for p in $(proxy_pids); do kill "$p" 2>/dev/null; done
+	i=0
+	while [ $i -lt 6 ]; do
+		proxy_running || return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+wait_up() {
+	i=0
+	while [ $i -lt 12 ]; do
+		proxy_running && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
 }
 
 ensure_up() {
-	# 代理没起来就起（否则规则会把流量打到没人监听的端口）
+	# 已在跑就别去碰服务框架了：procd 的 stop/start 抖动会连带清规则
+	proxy_running && return 0
 	svc_start
-	sleep 1
+	# 等进程真的起来，否则规则会打到没人监听的端口
+	wait_up
 }
 
 case "$1" in
@@ -90,7 +126,7 @@ case "$1" in
 		if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/mitm.service ]; then
 			printf "%-16s %s\n" "代理服务" "$(systemctl is-active mitm 2>/dev/null)"
 		else
-			printf "%-16s %s\n" "代理服务" "$(ps w 2>/dev/null | grep -v grep | grep -q mitm_proxy && echo running || echo stopped)"
+			printf "%-16s %s\n" "代理服务" "$(proxy_running && echo running || echo stopped)"
 		fi
 		netstat -ltn 2>/dev/null | grep -E "8080|8443" | sed 's/^/  /'
 		printf "%-16s %s\n" "解密范围" "$(cat "$TARGETS" 2>/dev/null | tr '\n' ' ')"

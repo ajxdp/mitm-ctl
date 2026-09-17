@@ -4,7 +4,26 @@ USE_PROCD=1
 START=95
 STOP=10
 
+# 清掉可能残留的旧实例。
+# 为什么需要：procd 的记账和实际情况可能脱节（比如进程曾被直接 kill、或上一轮
+# 重启时旧进程还没退出），此时新实例会 bind 失败并进入 crash loop
+# （日志里的 OSError: [Errno 98] Address in use），网页反而由那个失控的旧进程在服务。
+kill_stale() {
+	_k=0
+	for d in /proc/[0-9]*; do
+		c=$(cat "$d/comm" 2>/dev/null) || continue
+		[ "$c" = "python3" ] || continue
+		tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q "$1" && {
+			kill "$(basename "$d")" 2>/dev/null
+			_k=1
+		}
+	done
+	[ "$_k" = "1" ] && sleep 1
+	return 0
+}
+
 start_service() {
+	kill_stale pktcap_server.py
 	procd_open_instance
 	procd_set_param command /usr/bin/python3 /usr/share/pktcap/pktcap_server.py
 	procd_set_param env PKTCAP_IFACE=__LAN_IF__ PKTCAP_PORT=__PORT__ PKTCAP_USER=__USER__ PKTCAP_PASS=__PASS__ MITM_CONF=__CONF__

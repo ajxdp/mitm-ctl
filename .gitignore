@@ -32,3 +32,5 @@ Thumbs.db
 
 # 打包产物（feed/ 要入库给 opkg 当源用，dist/ 只是本地产物）
 dist/
+dist-exe/
+build/

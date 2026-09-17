@@ -1,5 +1,15 @@
 #!/bin/sh
 # 通用安装后回归验证
+# 日志文件可能还没生成（或装在别的路径），统一用这个读行数，避免冒出一句
+# "No such file or directory" 干扰判断。
+lines() {
+	if [ -f "$1" ]; then
+		wc -l < "$1" 2>/dev/null | tr -d ' '
+	else
+		echo 0
+	fi
+}
+
 echo "== 1) 页面（含不鉴权的证书页）=="
 for u in / /body /panel /packets /doc; do
     printf "  %-12s " "$u"
@@ -39,10 +49,10 @@ echo
 echo "== 5) 解密链路（走代理抓一条）=="
 curl -s -u root:root -X POST -H 'Content-Type: application/json' \
      -d '{"action":"enable"}' http://127.0.0.1:7690/api/log >/dev/null
-B=$(wc -l < /tmp/mitm-body.jsonl 2>/dev/null || echo 0)
+B=$(lines /tmp/mitm-body.jsonl)
 curl -s -x http://127.0.0.1:8080 -k -o /dev/null --max-time 25 'https://example.com/' 2>/dev/null
 sleep 1
-A=$(wc -l < /tmp/mitm-body.jsonl 2>/dev/null || echo 0)
+A=$(lines /tmp/mitm-body.jsonl)
 echo "  记录 $B -> $A  $([ "$A" -gt "$B" ] && echo '✓' || echo '✗')"
 
 echo

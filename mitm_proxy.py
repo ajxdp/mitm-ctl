@@ -36,12 +36,13 @@ OUT = os.environ.get("MITM_OUT", "/tmp/mitm-body.jsonl")
 HTTP_PORT = int(os.environ.get("MITM_HTTP_PORT", "8080"))
 HTTPS_PORT = int(os.environ.get("MITM_HTTPS_PORT", "8443"))
 MAX_BODY = int(os.environ.get("MITM_MAX_BODY", "200000"))
-MAX_SNIPPET = int(os.environ.get("MITM_MAX_SNIPPET", "20000"))      # 记录里每条正文最多留多少字符
+MAX_SNIPPET = int(os.environ.get("MITM_MAX_SNIPPET", "0"))          # 0 = 不额外截断，正文按抓到的原样存
+HARD_TEXT_CAP = int(os.environ.get("MITM_HARD_TEXT_CAP", str(8 * 1024 * 1024)))  # 解码后正文字符上限（防解压炸弹）
 REQ_BUFFER = int(os.environ.get("MITM_REQ_BUFFER", "262144"))       # 请求体先缓冲多少，超出则流式转发
-CAP_TEXT_MAX = int(os.environ.get("MITM_CAP_TEXT", "262144"))       # 文本响应抓取前缀上限（原始字节）
+CAP_TEXT_MAX = int(os.environ.get("MITM_CAP_TEXT", "2097152"))      # 文本响应抓取上限（原始字节，2MB）
 CAP_BIN_MAX = int(os.environ.get("MITM_CAP_BIN", "2048"))           # 二进制响应抓取前缀上限
-MAX_LOG_BYTES = int(os.environ.get("MITM_MAX_LOG", str(4 * 1024 * 1024)))  # 记录文件上限（/tmp 是内存盘！）
-KEEP_LOG_LINES = int(os.environ.get("MITM_KEEP_LINES", "400"))      # 超限时保留最后多少条
+MAX_LOG_BYTES = int(os.environ.get("MITM_MAX_LOG", str(8 * 1024 * 1024)))  # 记录文件上限（/tmp 是内存盘！）
+KEEP_LOG_LINES = int(os.environ.get("MITM_KEEP_LINES", "400"))      # 超限时最多保留最后多少条（仍受字节预算约束）
 MAX_CTX = 300
 
 # ---- 可预览二进制资源（图片 / PDF / 文档）----
@@ -76,6 +77,7 @@ _ca_cert = None
 _ctx_cache = {}
 _seq = 0
 _emit_n = 0
+_emit_bytes = 0              # 距上次裁剪累计写入的字节数
 _active = 0
 
 
@@ -611,6 +613,8 @@ def decode_prefix(data, headers, limit=None):
         return None, None, 0
     if limit is None:
         limit = MAX_SNIPPET
+    # limit <= 0 表示不额外截断，只受 HARD_TEXT_CAP 保护
+    eff = limit if limit and limit > 0 else HARD_TEXT_CAP
     enc = (headers.get("Content-Encoding") or headers.get("content-encoding") or "").lower()
     raw = data
     if "gzip" in enc or "x-gzip" in enc:
@@ -650,7 +654,7 @@ def decode_prefix(data, headers, limit=None):
     if text is None:
         return None, None, len(data)
     cn = list(dict.fromkeys(CJK_RE.findall(text)))[:8] or None
-    return text[:limit], cn, len(data)
+    return text[:eff], cn, len(data)
 
 
 def decode_body(data, headers):
@@ -707,8 +711,12 @@ def _log_limits():
 
 
 def _trim_log():
-    """记录文件超限就只保留最后若干条。
-    注意：/tmp 是 tmpfs（内存盘），不设上限会一点点吃掉内存。"""
+    """超限就丢最旧的记录。
+
+    两条约束同时生效：① 最多保留 keep_n 条；② 总字节数不得超过 maxb。
+    /tmp 是 tmpfs（内存盘），单条正文可能上百 KB，所以**必须**按字节卡，
+    否则光按条数限制，400 条大正文能吃掉上百 MB 内存。
+    """
     try:
         maxb, keep_n = _log_limits()
         if os.path.getsize(OUT) <= maxb:
@@ -716,11 +724,18 @@ def _trim_log():
         with open(OUT, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         keep = lines[-keep_n:]
+        total = sum(len(x) for x in keep)
+        drop = 0
+        while total > maxb and drop < len(keep) - 1:
+            total -= len(keep[drop])
+            drop += 1
+        keep = keep[drop:]
         tmp = OUT + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(keep)
         os.replace(tmp, OUT)
-        log("trimmed log -> %d lines (limit %d bytes)" % (len(keep), maxb))
+        log("trimmed log -> %d lines / %d KB (limits %d lines, %d KB)"
+            % (len(keep), total // 1024, keep_n, maxb // 1024))
     except Exception:
         pass
 
@@ -743,7 +758,7 @@ def log_enabled():
 
 
 def emit(entry):
-    global _seq, _emit_n
+    global _seq, _emit_n, _emit_bytes
     if not log_enabled():
         return          # 日志关闭：不写盘、不占内存
     with _lock:
@@ -758,8 +773,12 @@ def emit(entry):
         except Exception:
             pass
         _emit_n += 1
-        if _emit_n % 150 == 0:
+        _emit_bytes += len(line) + 1
+        # 单条正文可能上百 KB，所以按「累计写入量」触发裁剪，别等条数凑够：
+        # 每写满预算的 1/8 检查一次，最坏也就超出 1/8。
+        if _emit_bytes * 8 >= MAX_LOG_BYTES or _emit_n % 50 == 0:
             _trim_log()
+            _emit_bytes = 0
 
 
 # ----------------------------------------------------------------- 转发
@@ -826,7 +845,8 @@ def forward_http(client_sock, first, headers, body, host, port, scheme, client_i
              "target": first.split(" ")[1] if first and len(first.split(" ")) > 1 else "",
              "req_headers": headers, "resp_headers": {}, "status": ""}
     # 请求体（只记录前缀）
-    rt, rc, rl = decode_body(body[:MAX_SNIPPET] if body else body, headers)
+    rt, rc, rl = decode_body(
+        body if not MAX_SNIPPET or MAX_SNIPPET <= 0 else body[:MAX_SNIPPET], headers)
     entry["req_body"] = rt
     entry["req_cjk"] = rc
     entry["req_len"] = rl
@@ -972,7 +992,10 @@ def forward_http(client_sock, first, headers, body, host, port, scheme, client_i
             st, sc, _ = decode_prefix(bytes(captured), rheaders)
             entry["resp_body"] = st
             entry["resp_cjk"] = sc
-            entry["resp_truncated"] = bool(st) and len(st) >= MAX_SNIPPET
+            entry["resp_captured"] = len(captured)
+            # 只有「服务端返回的比我们抓到的多」才算没抓全（转发给客户端的始终是完整的）
+            entry["resp_truncated"] = bool(
+                st and (total > len(captured) or len(st) >= HARD_TEXT_CAP))
     except Exception as e:
         log("forward error", host, repr(e)[:120])
         # 还没回任何字节时给客户端一个明确的错误，避免 App 卡住
@@ -1145,10 +1168,15 @@ def listen(port, mode):
         threading.Thread(target=runner, daemon=True).start()
 
 
-if __name__ == "__main__":
+def main():
+    """启动解密代理：HTTP 一个线程，HTTPS 跑在主线程。"""
     load_ca()
     load_bypass()
     os.makedirs(CERT_DIR, exist_ok=True)
     log("CA ok; out =", OUT, "; auto-bypass =", len(_bypass))
     threading.Thread(target=listen, args=(HTTP_PORT, "http"), daemon=True).start()
     listen(HTTPS_PORT, "https")
+
+
+if __name__ == "__main__":
+    main()

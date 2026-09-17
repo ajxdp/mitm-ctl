@@ -1,5 +1,5 @@
 Package: mitm-ctl
-Version: 1.0.0-1
+Version: 1.0.1-1
 Depends: python3-light, python3-openssl, python3-cryptography, openssl-util, nftables-json, tcpdump
 Architecture: all
 Section: net
@@ -7,10 +7,10 @@ Priority: optional
 License: MIT
 Maintainer: mitm-ctl <https://github.com/ajxdp/mitm-ctl>
 Source: https://github.com/ajxdp/mitm-ctl
-Filename: mitm-ctl_1.0.0-1_all.ipk
-Size: 83162
-SHA256sum: d98e0e0c1ed2987b082a9992ebba758515d71850b4497fa6fb610fb787f5565e
-MD5Sum: b884bee20d129596d37da5f27896790c
+Filename: mitm-ctl_1.0.1-1_all.ipk
+Size: 87918
+SHA256sum: d30957ce956efcd11945b64b9fdadaee5d4fc7863b4669193c7d570da611dbf7
+MD5Sum: 6bd8e3131a68cb70b3618f679e505f99
 Description: 轻量 HTTPS 解密抓包：透明代理 + 网页控制台
  在路由器上做透明 HTTPS 解密抓包，不依赖 mitmproxy / squid，纯 Python 标准库实现。
  功能：请求/响应完整正文、JSON 可折叠树、图片与 PDF 直接预览、请求重放与编辑发送、
@@ -18,7 +18,7 @@ Description: 轻量 HTTPS 解密抓包：透明代理 + 网页控制台
  网页入口 http://<路由器IP>:7690/ ，证书下载 http://<路由器IP>:7690/cert
 
 Package: app-meta-mitm-ctl
-Version: 1.0.0-1
+Version: 1.0.1-1
 Depends: mitm-ctl
 Architecture: all
 Section: net
@@ -26,9 +26,9 @@ Priority: optional
 License: MIT
 Maintainer: mitm-ctl <https://github.com/ajxdp/mitm-ctl>
 Source: https://github.com/ajxdp/mitm-ctl
-Filename: app-meta-mitm-ctl_1.0.0-1_all.ipk
-Size: 6077
-SHA256sum: 1471ce54caad02a260cfc44cad46072e39fbe7ed36c1cccc06073a3631905852
-MD5Sum: 1fbfc32ed1de0497a326d04682a680d6
+Filename: app-meta-mitm-ctl_1.0.1-1_all.ipk
+Size: 6075
+SHA256sum: 10574ed8cb1b5dc35a48eff59f9854f77f225ff4d8ce6be345d094a8d3fa662c
+MD5Sum: 268418f4dcafc472ab89859ce96fbe7b
 Description: iStore 应用信息：轻量 HTTPS 解密抓包：透明代理 + 网页控制台
  元数据与图标。

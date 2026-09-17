@@ -686,6 +686,9 @@ BOOT_TS = time.time()
 PING_TS = {}
 PING_LOCK = threading.Lock()
 PING_GRACE = int(os.environ.get("PKTCAP_PING_GRACE", "90"))   # 超过这么久没 ping 就不算在看
+# 最后一次「开启解密」的时刻。没有它的话 idle_seconds 会一直拿 BOOT_TS 当基准，
+# 于是服务起来 N 分钟后再开解密，20 秒内就会被巡检关掉（表现为「刚打开就自动关了」）。
+LAST_ON_TS = [0.0]
 
 
 def ping_client(key):
@@ -701,10 +704,17 @@ def active_viewers():
         return len(PING_TS)
 
 
+def mark_on():
+    """记下「解密刚被打开」的时刻，让自动关闭从这一刻重新计时。"""
+    with PING_LOCK:
+        LAST_ON_TS[0] = time.time()
+
+
 def idle_seconds():
-    """距最后一次心跳（或服务启动）过了多久。"""
+    """距最后一次心跳 / 最后一次开启解密 / 服务启动，三者中最新的那个。"""
     with PING_LOCK:
         last = max(PING_TS.values()) if PING_TS else 0.0
+        last = max(last, LAST_ON_TS[0])
     return time.time() - max(last, BOOT_TS)
 
 
@@ -918,9 +928,18 @@ def log_status(msg):
 
 def autoclose_monitor():
     """无人看解密页超过 N 分钟 → 关闭解密（清 nft + 停代理），恢复直连、省下 CPU。"""
+    prev_on = None
     while True:
         time.sleep(20)
         try:
+            # 先看解密当前是开是关：由关变开的那一刻要重新计时，
+            # 否则服务启动已久的话，刚打开就会被下一次巡检立刻关掉。
+            st = mitm_status()
+            cur_on = bool(st.get("enabled") or st.get("running"))
+            if cur_on and prev_on is False:
+                mark_on()
+            prev_on = cur_on
+
             cfg = autoclose_cfg()
             if not cfg["enabled"]:
                 continue
@@ -930,10 +949,10 @@ def autoclose_monitor():
                 continue
             if not (TRANSPARENT or MITM_CTL):
                 continue          # 显式代理模式：进程由容器托管，不能在此停
-            st = mitm_status()
-            if st.get("enabled") or st.get("running"):
+            if cur_on:
                 log_status("autoclose: 无人监听超 %d 分钟，自动关闭解密" % cfg["minutes"])
                 _ctl("stop")
+                prev_on = False
         except Exception:
             pass
 
@@ -1738,6 +1757,7 @@ def mitm_apply(cfg):
     if TRANSPARENT or MITM_CTL:
         if want_enabled:
             _ctl("on")
+            mark_on()          # 从"打开"这一刻重新计时，别让巡检立刻关掉
         else:
             # off  = 只清拦截规则（代理留着，随时秒开）
             # stop = 清规则 + 停代理进程（最省 CPU，默认）
@@ -1975,10 +1995,16 @@ def main_test(path):
                 sys.stderr.write("... %d\n" % n)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 2 and sys.argv[1] == "--test":
-        main_test(sys.argv[2])
-    elif len(sys.argv) > 2 and sys.argv[1] == "--replay":
-        main_server(replay=sys.argv[2])
+def main(argv=None):
+    """入口：默认起 Web 服务（带可选 --replay / --test）。"""
+    argv = sys.argv if argv is None else argv
+    if len(argv) > 2 and argv[1] == "--test":
+        main_test(argv[2])
+    elif len(argv) > 2 and argv[1] == "--replay":
+        main_server(replay=argv[2])
     else:
         main_server()
+
+
+if __name__ == "__main__":
+    main()

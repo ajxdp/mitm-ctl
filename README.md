@@ -26,7 +26,7 @@
 |---|---|
 | **解密抓包** | 透明代理自动拦截网卡流量，支持 `全解` / `仅指定域名` / `全解+排除名单` 三种模式；按来源 IP、网卡过滤 |
 | **请求查看** | 完整请求行 / 请求头 / 请求体 / 响应头 / 响应体，中文自动高亮 |
-| **JSON 折叠树** | 递归折叠小三角、对象/数组计数徽标、默认展开两层、超长数组按需展开、可切回原始文本 |
+| **JSON 折叠树** | 左侧固定「行号 + 折叠三角」，淡色引导线按层级换色连到内容；**默认全部展开**，点整行任意位置即可折叠；可一键切「原始数据」纯文本 |
 | **二进制预览** | 🖼 图片直接显示、📄 PDF 内嵌预览、Office 文档可下载；按内容哈希去重存储 |
 | **主动发包** | 页面内「重放 / 编辑并发送」——类 Apipost 的简易请求编辑器，支持自定义方法/URL/头/体，可复制为 cURL |
 | **流量抓包** | 独立的 tcpdump 实时表格（DNS / TLS / TCP / UDP 解析 + 域名反查），**按需启动** |
@@ -136,7 +136,36 @@ docker run -d --name mitm-ctl \
 > 容器内无法做 nftables 重定向，所以是**显式代理模式**。功能一个不少（解密、折叠 JSON、图片预览、重放编辑器），只是"只抓某台设备"改由你在客户端决定。
 > CA 持久化在 `/data/ca/mitm-ca.crt`（命名卷），**别删卷**，否则设备要重新装证书。
 
-### 方式四：手动
+### 方式四：Windows exe（显式代理，只用本机）
+
+```sh
+pip install pyinstaller cryptography
+python tools/build-exe.py
+# 产物：dist-exe/mitm-ctl.exe（约 13 MB）
+```
+
+直接双击，或：
+
+```sh
+mitm-ctl.exe                      # 自动设系统代理，退出时还原
+mitm-ctl.exe --no-proxy           # 不碰系统代理，自己填 127.0.0.1:8080
+mitm-ctl.exe --install-ca         # 顺便把 CA 装进「当前用户 · 受信任的根证书」
+mitm-ctl.exe --port 7690 --proxy-port 8080
+```
+
+**能力边界（重要）**：
+
+| 能做 | 做不到 |
+|---|---|
+| 抓**本机**浏览器/程序的流量（走系统代理） | 抓整个局域网的其它设备（Windows 上没有 nftables） |
+| 解密、折叠 JSON、行号、图片/PDF 预览、重放 | 要抓全网设备得把本机做成网关 + WinDivert 重定向，属另一个量级的工程 |
+| 证书/配置存在 `%LOCALAPPDATA%\mitm-ctl\` | 「抓包表格」页需要 tcpdump，Windows 上不可用（其余功能正常） |
+
+> **curl 验证时的坑**：Windows 的 curl 用 schannel，会因「无法检查吊销状态」报
+> `CERT_TRUST_ERROR_REVOCATION_STATUS_UNKNOWN`。要么先 `--install-ca` 把 CA 装进信任库，
+> 要么测试时加 `--ssl-no-revoke`。浏览器不受影响（装完 CA 即可）。
+
+### 方式五：手动
 
 ```sh
 # ---------- OpenWrt ----------
@@ -324,9 +353,12 @@ mitm-ctl/
 ├── icon/mitm-ctl.png              iStore 应用图标（纯 Python 生成，无第三方依赖）
 ├── feed/                          **opkg 源**：Packages(.gz) + 两个 ipk（Release 与在线源共用）
 ├── bin/mitm-ctl-setup             设备侧初始化脚本（install.sh 与 ipk 共用，保证结果一致）
+├── windows/mitmctl.py             Windows 启动器（生成 CA + 起服务 + 设系统代理）
 ├── tools/
 │   ├── deploy.sh                  **改完代码一键部署**（归一化 LF + 上传 + 重启 + 校验）
+│   ├── restart-svc.sh             设备侧**确定性重启**（停干净→等端口释放→起→校验单实例）
 │   ├── build-pkg.py               **构建 ipk + opkg 源索引**（含出厂自检）
+│   ├── build-exe.py               **打包 Windows exe**（PyInstaller）
 │   ├── smoke-test.sh              安装后回归验证（页面/接口/开关/解密链路）
 │   ├── gen_preview.py             离线预览生成器（开发用）
 │   └── test.pcap                  抓包页测试数据
@@ -392,6 +424,39 @@ python3 tools/build-pkg.py --version 1.1.0
 > ⚠️ **ipk 格式随 OpenWrt 版本而变**：OpenWrt 24.10+ / Kwrt 25.x 的 ipk 是
 > **gzip 压缩的 tar**（内含 `./debian-binary` + `./data.tar.gz` + `./control.tar.gz`）；
 > 23.05 及更早是 **ar 归档**。默认产出新格式，老系统用 `--format=ar`。
+
+---
+
+## 🩹 更新日志
+
+### 1.0.1
+
+**修复（都是真机上实测抓到的）**
+
+- **「刚点开启解密，几秒后又自己关了」** —— 自动关闭的计时基准用的是「服务启动时刻」，
+  所以服务跑够 N 分钟后再开解密，20 秒内就会被巡检关掉。现在**开启的那一刻重新计时**。
+- **`mitm-ctl stop` 停不掉代理** —— 它会在调完服务框架后再强杀进程，而 procd 带 `respawn`，
+  直接杀会被当成崩溃而重启；更糟的是 procd 的 teardown（含 `stop_service` 里的清规则）
+  会迟到，把下一次 `on` 刚下发的规则抹掉。现在会**等 teardown 真正跑完**再返回，
+  只在框架失效时才兜底杀进程。
+- **procd 记账与实际脱节导致新实例 crash loop** —— 日志特征
+  `OSError: [Errno 98] Address in use` + `procd: ... in a crash loop`，此时页面仍由
+  那个孤儿进程撑着，服务其实已不受管理。现在 initd **启动前清理残留实例**自愈，
+  并新增 `tools/restart-svc.sh` 做确定性重启（停干净 → 等端口释放 → 起 → 校验单实例）。
+
+**功能与体验**
+
+- **正文不再截断**：取消「只保留前 2 万字符」的上限，抓到的内容全部保留
+  （转发给客户端的始终是完整内容）。日志改为按累计字节数触发裁剪，大响应的预算更准。
+  实测一条 263460 字节 / 246017 字符的 JSON 完整保存（`resp_truncated=false`）。
+- **JSON 折叠树重做**：每行最左侧固定「行号 + 三角」，用淡色引导线连到内容，
+  引导线随层级加长；**默认全部展开**；点整行任意位置都能折叠；
+  面板上新增「展开 / 收起 / **原始数据**」切换（点一下切成原始文本，再点切回折叠树）。
+
+**其他**
+
+- 部署脚本 `tools/deploy.sh` 改用确定性重启（`tools/restart-svc.sh`），
+  并在末尾打印进程数供核对。
 
 ---
 

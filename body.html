@@ -105,16 +105,26 @@
   .url{font-family:var(--mono);font-size:11.5px;word-break:break-all;color:#1f5bc4;
     background:#f4f7fd;border:1px solid #e2eaf8;border-radius:7px;padding:7px 9px}
   .j-key{color:#7a4ddb} .j-str{color:#1d7a37} .j-num{color:#c77700} .j-lit{color:#1f5bc4}
-  /* ---- JSON 折叠树 ---- */
-  .jt{font-family:var(--mono);font-size:11.5px;line-height:1.75}
-  .jt-row{display:flex;flex-wrap:wrap;align-items:baseline}
-  .jt-tog{width:13px;flex:none;cursor:pointer;color:#9aa1ad;user-select:none;display:inline-block;
-    text-align:center;transition:transform .12s;line-height:1.6}
-  .jt-tog:hover{color:var(--accent)}
+  /* ---- JSON 折叠树 ----
+     布局：[行号][三角][淡色引导线][内容]
+     行号与三角固定在左侧栏（不随层级右移），用一条淡色线连到内容，线长即缩进深度；
+     不同层级用不同淡色，方便看清所属层级。 */
+  .jt{font-family:var(--mono);font-size:11.5px;line-height:1.72}
+  .jt-row{display:flex;align-items:baseline;border-radius:4px}
+  .jt-row.clickable{cursor:pointer}
+  .jt-row.clickable:hover{background:#f4f7fd}
+  .jt-ln{flex:none;width:36px;text-align:right;padding-right:7px;color:#b6bdc9;
+    font-size:10px;line-height:1.9;user-select:none;-webkit-user-select:none}
+  .jt-tog{flex:none;width:14px;text-align:center;color:#9aa1ad;font-size:9px;
+    user-select:none;-webkit-user-select:none;transition:transform .12s;line-height:1.9}
+  .jt-tog.leaf{visibility:hidden}
+  .jt-row.clickable:hover>.jt-tog{color:var(--accent)}
   .jt.collapsed>.jt-row>.jt-tog{transform:rotate(-90deg)}
   .jt.collapsed>.jt-kids{display:none}
   .jt:not(.collapsed)>.jt-row>.jt-count{display:none}
-  .jt-kids{margin-left:6px;border-left:1px dashed #e3e7ef;padding-left:8px}
+  .jt-lead{flex:none;align-self:center;height:1px;border-radius:1px;margin-right:7px}
+  .jt-kids{margin-left:0}
+  .jt-c{flex:1;min-width:0;word-break:break-all}
   .jt-key{color:#7a4ddb;font-weight:600}
   .jt-idx{color:#9aa1ad}
   .jt-colon{color:#9aa1ad;margin-right:5px}
@@ -123,7 +133,8 @@
   .jt-brace{color:#6b7280}
   .jt-count{color:#8b93a1;font-size:10px;background:#f1f3f8;border-radius:5px;
     padding:0 5px;margin:0 2px}
-  .jt-more{color:var(--accent);cursor:pointer;font-size:11px;margin-left:13px}
+  .jt-empty{color:#9aa1ad;font-size:11px;margin-left:5px}
+  .jt-more{color:var(--accent);cursor:pointer;font-size:11px}
   .jt-more:hover{text-decoration:underline}
   .jt-empty{color:#9aa1ad}
   .big{padding:30px 16px;text-align:center;color:var(--muted)}
@@ -237,7 +248,7 @@
   </div>
   <div class="note" style="background:#f7f8fb;border-color:#e4e7ef;color:#5b6472">
     看不到某个 App？它的域名多半是<b>证书固定</b>的，已被<b>自动放行</b>（透传、不解密）——名单见
-    <a href="/panel">控制台 → ④</a>。为保持轻快，正文<b>只保留前 2 万字符</b>，转发给 App 的始终完整。
+    <a href="/panel">控制台 → ④</a>。正文不再截断，抓到多少显示多少；转发给 App 的始终是完整内容。
   </div>
 </div>
 
@@ -361,15 +372,17 @@
       .replace(/:(\s*)(true|false|null)/g, ':$1<span class="j-lit">$2</span>');
   }
   // ---------------------------------------------------- JSON 折叠树
-  var JT_CAP = 200;   // 单个数组默认最多渲染多少项（防止大响应把 DOM 撑爆）
+  var JT_CAP = 2000;       // 单个数组最多渲染多少项（再多给「全部展开」入口）
+  var JT_IND = 14;         // 每层缩进的像素宽（引导线长度）
+  // 每层一种淡色，用于左侧引导线
+  var JT_COLORS = ['#c2cbdb', '#cbc2db', '#c2dbcb', '#dbcbc2', '#c2d6db', '#dbc2cc'];
+  var _jtLn = 0;           // 渲染行号，每次重绘从 1 开始
 
   function jtIsArr(v){ return Object.prototype.toString.call(v) === '[object Array]'; }
 
+  // 字符串不再截断：完整显示（用户要看全部字符）
   function jtStr(v){
-    var str = String(v);
-    var shown = str;
-    if(str.length > 500){ shown = str.slice(0, 500) + '…（共 ' + str.length + ' 字符）'; }
-    return '<span class="jt-str">"' + hl(shown) + '"</span>';
+    return '<span class="jt-str">"' + hl(String(v)) + '"</span>';
   }
   function jtScalar(v){
     if(v === null) return '<span class="jt-lit">null</span>';
@@ -384,36 +397,60 @@
     return '<span class="' + (isIdx ? 'jt-idx' : 'jt-key') + '">' + hl(String(name)) +
            '</span><span class="jt-colon">:</span>';
   }
-  // depth: 0=根，1=第一层…；depth>=2 默认折叠
+  // 一行：[行号][三角][引导线][内容]
+  // hasKids=true 的行整行可点（含文字）都能折叠。
+  // 注意分两步：jtTakeNo() 先占号，jtRowAt() 再渲染。
+  // 容器必须「先占号再构建子行」，否则父行的号会排到子行后面去（行号乱序）。
+  function jtTakeNo(){ _jtLn++; return _jtLn; }
+  function jtRowAt(ln, depth, hasKids, inner){
+    var lead = '<span class="jt-lead" style="width:' + (depth * JT_IND + 10) + 'px;background:' +
+               JT_COLORS[depth % JT_COLORS.length] + '"></span>';
+    var tog = '<span class="jt-tog' + (hasKids ? '' : ' leaf') + '">▾</span>';
+    return '<div class="jt-row' + (hasKids ? ' clickable' : '') + '">' +
+      '<span class="jt-ln">' + ln + '</span>' + tog + lead +
+      '<span class="jt-c">' + inner + '</span></div>';
+  }
+  function jtRow(depth, hasKids, inner){
+    return jtRowAt(jtTakeNo(), depth, hasKids, inner);
+  }
+  function jtMoreRow(depth, n, cap){
+    var lead = '<span class="jt-lead" style="width:' + (depth * JT_IND + 10) + 'px;background:' +
+               JT_COLORS[depth % JT_COLORS.length] + '"></span>';
+    return '<div class="jt-row"><span class="jt-ln"></span>' +
+      '<span class="jt-tog leaf">▾</span>' + lead +
+      '<span class="jt-c"><span class="jt-more" data-jt-more="1">… 还有 ' + (n - cap) +
+      ' 项，点这里全部展开</span></span></div>';
+  }
+
+  // depth: 0=根，1=第一层…；**默认全部展开**（想看折叠用「收起」或点行）
   function jtNode(name, v, depth, isIdx, full){
     if(v === null || typeof v !== 'object'){
-      return '<div class="jt-row">' + jtLabel(name, isIdx) + jtScalar(v) + '</div>';
+      return jtRow(depth, false, jtLabel(name, isIdx) + jtScalar(v));
     }
     var arr = jtIsArr(v);
     var keys = arr ? null : Object.keys(v);
     var n = arr ? v.length : keys.length;
     var open = arr ? '[' : '{', close = arr ? ']' : '}';
     if(!n){
-      return '<div class="jt"><div class="jt-row">' + jtLabel(name, isIdx) +
-             '<span class="jt-brace">' + open + close + '</span>' +
-             '<span class="jt-empty" style="margin-left:5px">空</span></div></div>';
+      return jtRow(depth, false, jtLabel(name, isIdx) +
+        '<span class="jt-brace">' + open + close + '</span>' +
+        '<span class="jt-empty">空</span>');
     }
     var cap = full ? n : Math.min(n, JT_CAP);
+    var myLn = jtTakeNo();          // 先占号，再构建子行，保证行号自上而下
     var kids = '';
     for(var i = 0; i < cap; i++){
       kids += arr ? jtNode(i, v[i], depth + 1, true, full)
                   : jtNode(keys[i], v[keys[i]], depth + 1, false, full);
     }
     if(n > cap){
-      kids += '<div class="jt-more" data-jt-more="1">… 还有 ' + (n - cap) +
-              ' 项，点这里全部展开</div>';
+      kids += jtMoreRow(depth + 1, n, cap);
     }
-    var collapsed = (depth >= 2) ? ' collapsed' : '';
-    return '<div class="jt' + collapsed + '">' +
-      '<div class="jt-row"><span class="jt-tog" title="展开/折叠">▾</span>' + jtLabel(name, isIdx) +
-      '<span class="jt-brace">' + open + '</span>' +
-      '<span class="jt-count">' + n + (arr ? ' 项' : ' 个字段') + '</span>' +
-      '<span class="jt-brace">' + close + '</span></div>' +
+    return '<div class="jt">' +
+      jtRowAt(myLn, depth, true, jtLabel(name, isIdx) +
+        '<span class="jt-brace">' + open + '</span>' +
+        '<span class="jt-count">' + n + (arr ? ' 项' : ' 个字段') + '</span>' +
+        '<span class="jt-brace">' + close + '</span>') +
       '<div class="jt-kids">' + kids + '</div></div>';
   }
   function jsonTreeHtml(s, full){
@@ -422,6 +459,7 @@
     if(t.charAt(0) !== '{' && t.charAt(0) !== '[') return null;   // 只对对象/数组建树
     var obj;
     try{ obj = JSON.parse(t); }catch(e){ return null; }
+    _jtLn = 0;                                                    // 每次重绘重新编号
     return '<div class="jt-wrap">' + jtNode(null, obj, 0, false, !!full) + '</div>';
   }
   // 正文渲染：JSON 走折叠树，其它走纯文本
@@ -469,7 +507,7 @@
       '<span class="grow"></span>'+
       '<button class="mini" data-jt="all">展开</button>'+
       '<button class="mini" data-jt="none">收起</button>'+
-      '<button class="mini" data-jt="raw">≡ 原始</button>'+
+      '<button class="mini" data-jt="raw" title="在折叠树与原始文本之间切换">原始数据</button>'+
       '<button class="mini" data-copy="req">复制</button></div>' +
       '<div class="pb"><div class="url">'+esc(d.method||'GET')+' '+esc(fullUrl(d))+'</div>'+
         '<div style="height:9px"></div><div class="sub" style="margin-bottom:4px">请求头</div>'+
@@ -480,11 +518,11 @@
     var resp = '<div class="panel"><div class="ph">▼ 响应 ' +
       (d.status? '<span class="'+sClass(d.status)+'">'+esc(d.status)+'</span>':'') +
       ' <span class="sub">'+fmtBytes(d.resp_len)+'</span>' +
-      (d.resp_truncated? ' <span class="sub">· 仅显示前 '+((d.resp_body||'').length)+' 字符</span>':'') +
+      (d.resp_truncated? ' <span class="sub" title="转发给客户端的内容始终是完整的">· 内容较大，仅抓到 '+fmtBytes(d.resp_captured||0)+'</span>':'') +
       '<span class="grow"></span>'+
       '<button class="mini" data-jt="all">展开</button>'+
       '<button class="mini" data-jt="none">收起</button>'+
-      '<button class="mini" data-jt="raw">≡ 原始</button>'+
+      '<button class="mini" data-jt="raw" title="在折叠树与原始文本之间切换">原始数据</button>'+
       '<button class="mini" data-copy="resp">复制</button></div>' +
       '<div class="pb"><div class="sub" style="margin-bottom:4px">响应头</div>'+headerRows(d.resp_headers)+
         '<div class="sub" style="margin:9px 0 4px">响应体'+(d.resp_ctype? ' · '+esc(d.resp_ctype):'')+'</div>'+
@@ -660,7 +698,8 @@
         if(act === 'all' || act === 'none'){ jtToggleAll(box, act === 'none'); return; }
         if(act === 'raw'){
           box.__raw = !box.__raw;
-          b.textContent = box.__raw ? '{} 树形' : '≡ 原始';
+          b.textContent = box.__raw ? '折叠树' : '原始数据';
+          b.title = box.__raw ? '切回 JSON 折叠树' : '切换成原始文本';
           repaintBox(box);
         }
       };
@@ -728,7 +767,7 @@
         (sum? ' <span class="sum">· '+esc(sum.slice(0,60))+'</span>'
              : (bodySum? ' <span class="sum">· '+esc(bodySum)+'</span>':''))+
         (d.blob || d.blob_partial ? ' '+kindBadge(d) : '')+
-        (d.resp_truncated? ' <span class="sub">…</span>':'')+'</td>'+
+        ''+'</td>'+
       '<td class="sz">'+fmtBytes(d.resp_len)+'</td>';
 
     var r = {d:d, tr:tr, detailTr:null, open:false};
@@ -816,7 +855,7 @@
         $('mStatus').className = sClass(j.status);
         $('mStatus').textContent = j.status || '-';
         $('mMeta').textContent = '耗时 ' + j.ms + ' ms · ' + fmtBytes(j.len) +
-          (j.ctype? ' · '+j.ctype : '') + (j.truncated? ' · 仅显示前 '+((j.body||'').length)+' 字符':'') +
+          (j.ctype? ' · '+j.ctype : '') + (j.truncated? ' · 内容较大，仅抓到 '+fmtBytes(j.captured||0):'') +
           (j.binary? ' · 二进制': '');
         $('mRespHeaders').innerHTML = headerRows(j.headers);
         var _kind = j.blob_ext === 'pdf' ? 'pdf'
@@ -841,20 +880,29 @@
       });
   }
 
-  // 折叠三角 / 「还有 N 项」—— 用事件委托，避免给成千上万个节点挂监听
+  // 折叠 / 「还有 N 项」—— 事件委托，避免给成千上万个节点挂监听。
+  // 点整行任意位置（包括文字和三角）都能折叠；但正在选中文字时不触发，
+  // 否则想复制内容会变成折叠。
+  function jtIsSelecting(){
+    try{
+      var sel = window.getSelection();
+      return !!(sel && String(sel).length > 0);
+    }catch(e){ return false; }
+  }
   document.addEventListener('click', function(ev){
     var t = ev.target;
     if(!t || !t.closest) return;
-    var tog = t.closest('.jt-tog');
-    if(tog){
-      var nd = tog.closest('.jt');
-      if(nd) nd.classList.toggle('collapsed');
-      return;
-    }
+    if(jtIsSelecting()) return;                 // 用户在选文字，别抢
     var more = t.closest('[data-jt-more]');
     if(more){
       var box = more.closest('.jtbox');
       if(box){ box.__full = true; repaintBox(box); }
+      return;
+    }
+    var row = t.closest('.jt-row.clickable');
+    if(row){
+      var nd = row.closest('.jt');
+      if(nd) nd.classList.toggle('collapsed');
     }
   });
 
