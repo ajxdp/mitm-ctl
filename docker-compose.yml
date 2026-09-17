@@ -1,0 +1,25 @@
+# mitm-ctl —— 显式代理模式（把客户端代理指向 主机IP:8080）
+services:
+  mitm-ctl:
+    build: .
+    image: mitm-ctl:latest
+    container_name: mitm-ctl
+    restart: unless-stopped
+    ports:
+      - "8080:8080"    # HTTP 代理
+      - "8443:8443"    # HTTPS 代理
+      - "7690:7690"    # 网页控制台
+    volumes:
+      - mitm-data:/data      # CA 证书 + 配置 + 日志 + blob 缓存
+    environment:
+      PKTCAP_PORT: "7690"
+      PKTCAP_USER: "root"
+      PKTCAP_PASS: "root"    # ← 暴露到公网前务必修改
+    # 演示机资源很小也够跑
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  mitm-data:

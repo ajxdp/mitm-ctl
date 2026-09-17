@@ -1,0 +1,23 @@
+# 统一用 LF —— 这些脚本要拷到 OpenWrt/busybox 上跑，CRLF 会导致 `not found` / 语法错误
+* text=auto eol=lf
+
+*.sh            text eol=lf
+*.py            text eol=lf
+*.html          text eol=lf
+*.md            text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.txt           text eol=lf
+Dockerfile      text eol=lf
+bin/*           text eol=lf
+initd/*         text eol=lf
+docker/*        text eol=lf
+
+# 二进制
+*.pcap          binary
+*.pcapng        binary
+*.png           binary
+*.jpg           binary
+*.ico           binary
+*.gz            binary

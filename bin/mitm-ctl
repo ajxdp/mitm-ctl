@@ -1,0 +1,43 @@
+#!/bin/sh
+# 解密代理总控：on = 开启(拦截+解密) / off = 暂停拦截(代理留着) / stop = 完全停止(最省)
+TARGETS=/etc/squid/mitm-targets
+
+ensure_up() { /etc/init.d/mitm start >/dev/null 2>&1; sleep 1; }
+
+case "$1" in
+	on)
+		ensure_up
+		/usr/libexec/mitm-nft.sh apply
+		echo "解密已开启（拦截 + 解密）"
+		;;
+	off)
+		/usr/libexec/mitm-nft.sh clear
+		echo "已暂停拦截：所有设备恢复直连（代理进程仍在，随时可秒开）"
+		;;
+	stop)
+		/usr/libexec/mitm-nft.sh clear
+		/etc/init.d/mitm stop >/dev/null 2>&1
+		echo "解密已完全停止（规则已清、进程已停，最省性能）"
+		;;
+	all)
+		echo "10.0.0.0/24" > "$TARGETS"
+		ensure_up                      # 关键：没有这一步，规则会把流量打到没人监听的端口
+		/usr/libexec/mitm-nft.sh apply
+		echo "解密范围: 整个 LAN"
+		;;
+	only)
+		[ -z "$2" ] && { echo "用法: mitm-ctl only <IP|CIDR>"; exit 1; }
+		echo "$2" > "$TARGETS"
+		ensure_up
+		/usr/libexec/mitm-nft.sh apply
+		echo "解密范围: $2"
+		;;
+	status)
+		echo "== 代理进程: $(for d in /proc/[0-9]*; do cat $d/comm 2>/dev/null; done | grep -c '^python3$') 个 python3 =="
+		netstat -ltn 2>/dev/null | grep -E "8080|8443" | sed "s/^/  /"
+		echo "== 解密范围 =="; cat "$TARGETS" 2>/dev/null | sed "s/^/  /"
+		echo "== nft 规则 =="; nft list table inet mitm 2>/dev/null | grep -E "redirect|drop" | sed "s/^/  /"
+		echo "== CA =="; openssl x509 -in /etc/squid/ssl/mitm-ca.crt -noout -subject 2>/dev/null | sed "s/^/  /"
+		;;
+	*) echo "用法: mitm-ctl on|off|stop|all|only <IP>|status" ;;
+esac

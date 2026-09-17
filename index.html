@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kwrt 流量抓包</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e6e8ee; --line2:#eef0f4;
+    --txt:#1f2430; --muted:#6b7280; --accent:#2f6fed; --accent2:#eaf1ff;
+    --tcp:#2f6fed; --udp:#0e9f8b; --http:#2f9e44; --dns:#7a4ddb; --tls:#c77700;
+    --arp:#7a8290; --icmp:#d9483b; --other:#5a6270;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:13px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);
+    padding:10px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+    position:sticky;top:0;z-index:10}
+  h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#c3c8d2;display:inline-block;margin-right:6px;vertical-align:middle}
+  .dot.on{background:#2f9e44;box-shadow:0 0 0 3px #2f9e4422}
+  .dot.off{background:#d9483b}
+  .stat{color:var(--muted);font-size:12px}
+  .stat b{color:var(--txt);font-weight:600}
+  .grow{flex:1}
+  .toolbar{background:var(--card);border-bottom:1px solid var(--line);
+    padding:8px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    position:sticky;top:49px;z-index:9}
+  input[type=search],select{font:inherit;padding:6px 10px;border:1px solid var(--line);
+    border-radius:7px;background:#fff;color:var(--txt);outline:none}
+  input[type=search]{min-width:230px}
+  input[type=search]:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent2)}
+  button{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:7px;
+    background:#fff;color:var(--txt);cursor:pointer}
+  button:hover{border-color:#c9cfdb;background:#fafbfd}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#2a63d6}
+  label.chk{display:inline-flex;align-items:center;gap:5px;color:var(--muted);cursor:pointer;user-select:none}
+  .wrap{padding:12px 16px 40px}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
+    border-radius:10px;overflow:hidden}
+  thead th{position:sticky;top:98px;background:#fafbfd;border-bottom:1px solid var(--line);
+    text-align:left;padding:8px 10px;font-weight:600;color:#4b5563;font-size:12px;white-space:nowrap;z-index:5}
+  tbody td{padding:6px 10px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap}
+  tbody tr.row:hover{background:#f7f9fd;cursor:pointer}
+  td.num{color:var(--muted);font-variant-numeric:tabular-nums}
+  td.time{color:#4b5563;font-variant-numeric:tabular-nums}
+  td.ip{font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px}
+  td.info{white-space:normal;max-width:520px;word-break:break-word}
+  .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600;
+    color:#fff;line-height:1.7}
+  .badge.TCP{background:var(--tcp)} .badge.UDP{background:var(--udp)}
+  .badge.HTTP{background:var(--http)} .badge.DNS{background:var(--dns)}
+  .badge.TLS{background:var(--tls)} .badge.ARP{background:var(--arp)}
+  .badge.ICMP,.badge.ICMPv6{background:var(--icmp)} .badge.other{background:var(--other)}
+  .flags{color:#98a1b0;font-size:11px;margin-left:4px}
+  .cn{background:#fff2c2;border-radius:3px;padding:0 2px}
+  .detail td{background:#fbfcfe;white-space:normal}
+  .dgrid{display:grid;grid-template-columns:88px 1fr;gap:4px 12px;font-size:12px;
+    border-left:3px solid var(--accent);padding:8px 12px;margin:2px 0}
+  .dgrid dt{color:var(--muted)}
+  .dgrid dd{margin:0;font-family:ui-monospace,Consolas,Menlo,monospace;word-break:break-all}
+  .mono{font-family:ui-monospace,Consolas,Menlo,monospace}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+  .pill{background:#eef1f6;border-radius:6px;padding:1px 6px;color:#4b5563;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1><span id="dot" class="dot off"></span>Kwrt 流量抓包</h1>
+  <span class="stat" id="stConn">连接中…</span>
+  <span class="stat">接收 <b id="stTotal">0</b> 包</span>
+  <span class="stat">显示 <b id="stShow">0</b> 行</span>
+  <span class="stat">速率 <b id="stRate">0</b> 包/秒</span>
+  <span class="grow"></span>
+  <span class="stat">网卡 <span class="pill">br-lan</span> · 全 LAN</span>
+  <a id="popout" href="#" style="color:#7a4ddb;text-decoration:none;font-weight:600;white-space:nowrap">↗ 新窗口打开</a>
+  <a href="/panel" style="color:#7a4ddb;text-decoration:none;font-weight:600;white-space:nowrap">控制台</a>
+  <a href="/body" style="color:#7a4ddb;text-decoration:none;font-weight:600;white-space:nowrap">解密内容（请求/返回）→</a>
+  <a href="/doc" style="color:#7a4ddb;text-decoration:none;font-weight:600;white-space:nowrap">📖 速查</a>
+</header>
+
+<div class="toolbar">
+  <button id="capBtn" class="primary" style="font-weight:700">▶ 开始抓包</button>
+  <span class="stat" id="capState">抓包未启动（默认关闭，点「开始抓包」才跑）</span>
+  <label class="chk" style="margin-left:6px"><input type="checkbox" id="keepalive"> 无人观看也保持</label>
+  <span class="grow"></span>
+  <input type="search" id="q" placeholder="筛选：IP / 端口 / 域名 / 关键字…">
+  <select id="proto">
+    <option value="">全部协议</option>
+    <option>TCP</option><option>UDP</option><option>HTTP</option><option>DNS</option>
+    <option>TLS</option><option>ARP</option><option>ICMP</option><option>其他</option>
+  </select>
+  <label class="chk"><input type="checkbox" id="onlyCn"> 只看含中文</label>
+  <label class="chk"><input type="checkbox" id="autoscroll" checked> 自动滚动</label>
+  <button id="pause" class="primary">暂停</button>
+  <button id="clear">清空</button>
+</div>
+
+<div class="wrap">
+  <div class="hint" id="hintBox" style="display:none;background:#fff8e6;border:1px solid #f0e0b8;color:#7a5b00;border-radius:9px;padding:9px 12px;font-size:12.5px;margin-bottom:10px">
+    抓包会占用路由器 CPU。<b>不看这一页时默认 60 秒后自动停止</b>；想让它一直抓，勾选上面的「无人观看也保持」。
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:52px">#</th>
+        <th style="width:96px">时间</th>
+        <th>源</th>
+        <th>目的</th>
+        <th style="width:96px">协议</th>
+        <th style="width:64px">长度</th>
+        <th>概要</th>
+      </tr>
+    </thead>
+    <tbody id="tb"></tbody>
+  </table>
+  <div class="empty" id="empty">抓包未启动 —— 点上面的「▶ 开始抓包」，然后让设备产生点流量（刷新网页 / 打开 App）。</div>
+</div>
+
+<script>
+(function(){
+  var MAX = 2000;                 // 保留的最大行数
+  var all = [];                    // 接收到的原始包（封顶 MAX）
+  var rendered = new Map();        // n -> <tr>
+  var paused = false, total = 0, shown = 0;
+  var dirty = false, flushTimer = null, rateWin = [], rateTimer = null;
+
+  var $ = function(id){ return document.getElementById(id); };
+  var tb = $('tb'), empty = $('empty');
+
+  var CN_RE = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]{2,}/g;
+
+  function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function hl(s){ s = esc(s); return s.replace(CN_RE, function(m){ return '<span class="cn">'+m+'</span>'; }); }
+
+  function badge(p){
+    if(!p){ return '<span class="badge other">?</span>'; }
+    var k = (p.app||p.proto||'').toUpperCase();
+    if(k==='DHCP') k='UDP';
+    var cls = ['TCP','UDP','HTTP','DNS','TLS','ARP','ICMP','ICMPV6'].indexOf(k)>=0 ? (k==='ICMPV6'?'ICMP':k) : 'other';
+    var label = p.app || p.proto;
+    return '<span class="badge '+cls+'">'+esc(label)+'</span>'+(p.flags&&p.proto==='TCP'?'<span class="flags">'+esc(p.flags)+'</span>':'');
+  }
+  function ep(ip,port){
+    if(!ip) return '';
+    return esc(ip) + (port!=null ? ':<span class="flags">'+esc(port)+'</span>' : '');
+  }
+  function rowHTML(p){
+    return '<td class="num">'+p.n+'</td>'+
+      '<td class="time">'+esc(p.t)+'.'+String(p.ms).padStart(3,'0')+'</td>'+
+      '<td class="ip">'+ep(p.src,p.sport)+'</td>'+
+      '<td class="ip">'+ep(p.dst,p.dport)+'</td>'+
+      '<td>'+badge(p)+'</td>'+
+      '<td class="num">'+p.len+'</td>'+
+      '<td class="info">'+hl(p.info)+'</td>';
+  }
+
+  // 过滤：返回 true 表示要显示
+  function matches(p){
+    var q = qval;
+    if(proto.val){
+      var v = proto.val.toUpperCase();
+      var k = (p.app||p.proto||'').toUpperCase();
+      if(v==='其他'){ if(['TCP','UDP','HTTP','DNS','TLS','ARP','ICMP','ICMPV6'].indexOf(k)>=0) return false; }
+      else if(v==='ICMP'){ if(k!=='ICMP'&&k!=='ICMPV6') return false; }
+      else if(k!==v) return false;
+    }
+    if(onlyCn.checked && !detailText(p).match(CN_RE)) return false;
+    if(q){ return detailText(p).toLowerCase().indexOf(q) >= 0; }
+    return true;
+  }
+  function detailText(p){
+    if(p._x!=null) return p._x;
+    var d=p.detail||{}, s=[p.info||'',p.src||'',p.dst||'',p.sport||'',p.dport||'',p.proto||'',p.app||''];
+    if(d.dns){ s.push(d.dns.query||''); s.push(d.dns.query_cn||''); s.push((d.dns.all||[]).join(' ')); }
+    if(d.http){ var h=d.http; s.push(h.host||'',h.method||'',h.path||'',h.status||'',h.ctype||'',h.body||''); if(h.cjk) s.push(h.cjk.join(' ')); }
+    if(d.tls){ s.push(d.tls.sni||''); }
+    p._x = s.join(' ');
+    return p._x;
+  }
+
+  function makeTr(p){
+    var tr=document.createElement('tr');
+    tr.className='row'; tr.dataset.n=p.n; tr.innerHTML=rowHTML(p);
+    tr.onclick=function(){ toggleDetail(tr,p); };
+    return tr;
+  }
+  function toggleDetail(tr,p){
+    var next=tr.nextSibling;
+    if(next && next.classList && next.classList.contains('detail')){ next.remove(); return; }
+    var d=p.detail||{}, rows=[];
+    rows.push(['时间', p.t+'.'+String(p.ms).padStart(3,'0')]);
+    rows.push(['源', (p.src||'')+(p.sport!=null?(':'+p.sport):'')]);
+    rows.push(['目的', (p.dst||'')+(p.dport!=null?(':'+p.dport):'')]);
+    rows.push(['协议 / 应用', (p.proto||'')+(p.app?(' / '+p.app):'')+(p.flags?(' ['+p.flags+']'):'')]);
+    rows.push(['帧长度', p.len+' 字节']);
+    if(d.flow){ rows.push(['所属会话', d.flow.proto+' · '+d.flow.name]); }
+    if(d.dns){ rows.push(['DNS 查询', d.dns.query]); if(d.dns.query_cn) rows.push(['中文域名', d.dns.query_cn]);
+      if(d.dns.answers && d.dns.answers.length) rows.push(['解析结果', d.dns.answers.map(function(a){ return a[0]+' → '+a[1]; }).join('   |   ')]); }
+    if(d.http){ var h=d.http;
+      if(h.method) rows.push(['HTTP 请求', h.method+' '+(h.path||'')]);
+      if(h.status) rows.push(['HTTP 状态', h.status]);
+      if(h.host) rows.push(['Host', h.host]);
+      if(h.ctype) rows.push(['Content-Type', h.ctype]);
+      if(h.body) rows.push(['正文（文本）', h.body]);
+      if(h.body_bin) rows.push(['正文', '二进制数据 '+h.body_bin+' 字节']);
+      if(h.cjk) rows.push(['包含中文', h.cjk.join('  |  ')]);
+    }
+    if(d.tls){ rows.push(['TLS SNI', d.tls.sni]); }
+    var html='<div class="dgrid">';
+    for(var i=0;i<rows.length;i++){ html+='<dt>'+esc(rows[i][0])+'</dt><dd>'+hl(rows[i][1])+'</dd>'; }
+    html+='</div>';
+    var dtr=document.createElement('tr');
+    dtr.className='detail';
+    var td=document.createElement('td'); td.colSpan=7; td.innerHTML=html;
+    dtr.appendChild(td); tr.parentNode.insertBefore(dtr, tr.nextSibling);
+  }
+
+  function addRendered(p){
+    var tr=makeTr(p);
+    tb.appendChild(tr); rendered.set(p.n, tr); shown++;
+  }
+  function trim(){
+    if(all.length>MAX){
+      var drop=all.splice(0, all.length-MAX);
+      for(var i=0;i<drop.length;i++){
+        var el=rendered.get(drop[i].n);
+        if(el){ if(el.nextSibling&&el.nextSibling.classList&&el.nextSibling.classList.contains('detail')) el.nextSibling.remove();
+          el.remove(); rendered.delete(drop[i].n); shown--; }
+      }
+    }
+    if(tb.children.length>MAX*2){ rebuild(); }
+  }
+  function rebuild(){
+    tb.innerHTML=''; rendered.clear(); shown=0;
+    for(var i=0;i<all.length;i++){ if(matches(all[i])) addRendered(all[i]); }
+    updateStats();
+  }
+  function updateStats(){
+    $('stTotal').textContent=total; $('stShow').textContent=shown;
+    empty.style.display = shown? 'none':'block';
+  }
+  function scrollBottom(){ if(autoscroll.checked) window.scrollTo(0, document.body.scrollHeight); }
+
+  function onPacket(p){
+    if(!p||!p.n) return;
+    total++;
+    all.push(p); trim();
+    if(!paused && matches(p)){ addRendered(p); dirty=true; }
+    updateStats();
+  }
+  function flushLoop(){
+    if(dirty){ dirty=false; scrollBottom(); }
+  }
+
+  // ---- SSE ----
+  var es;
+  function connect(){
+    if(es) try{ es.close(); }catch(e){}
+    es = new EventSource('/stream');
+    es.onopen=function(){ $('dot').className='dot on'; $('stConn').textContent='已连接'; };
+    es.onerror=function(){ $('dot').className='dot off'; $('stConn').textContent='已断开，重连中…';
+      try{ es.close(); }catch(e){}
+      setTimeout(connect, 3000); };
+    es.onmessage=function(e){ try{ onPacket(JSON.parse(e.data)); }catch(err){} };
+  }
+
+  // ---- 控件 ----
+  var q=$('q'), proto=$('proto'), onlyCn=$('onlyCn'), autoscroll=$('autoscroll');
+  var qval='';
+  var qt=null;
+  q.oninput=function(){ clearTimeout(qt); qt=setTimeout(function(){ qval=q.value.trim().toLowerCase(); rebuild(); },180); };
+  proto.onchange=rebuild;
+  onlyCn.onchange=rebuild;
+  $('pause').onclick=function(){ paused=!paused;
+    this.textContent=paused?'继续':'暂停'; this.className=paused?'':'primary';
+    if(!paused) rebuild(); };
+  $('clear').onclick=function(){ all=[]; total=0; rebuild(); };
+
+  setInterval(flushLoop, 250);
+  rateTimer=setInterval(function(){
+    var now=Date.now(); rateWin.push([now,total]);
+    while(rateWin.length && now-rateWin[0][0]>3000) rateWin.shift();
+    if(rateWin.length>1){ var dt=(now-rateWin[0][0])/1000; var dn=total-rateWin[0][1];
+      document.getElementById('stRate').textContent=dt>0?Math.round(dn/dt):0; }
+  },1000);
+
+  connect();
+  loadCap(); setInterval(loadCap, 5000);
+
+  // 嵌在 LuCI iframe 里时，一键跳出到独立页面
+  (function(){ var p=document.getElementById('popout'); if(p){ p.href=location.href; p.target='_blank'; } })();
+
+  function capPaint(s){
+    var on = s && s.running;
+    $('capBtn').textContent = on ? '■ 停止抓包' : '▶ 开始抓包';
+    $('capBtn').className = on ? '' : 'primary';
+    $('capState').textContent = on
+      ? ('正在抓包'+(s.clients? '（'+s.clients+' 个查看者）':'')+(s.keepalive? ' · 保持运行':''))
+      : '抓包未启动（默认关闭，点「开始抓包」才跑）';
+    $('keepalive').checked = !!(s && s.keepalive);
+    $('hintBox').style.display = on ? '' : 'none';
+  }
+  function loadCap(){
+    fetch('/api/capture',{cache:'no-store'}).then(function(r){return r.json();})
+      .then(function(j){ if(j&&j.status) capPaint(j.status); }).catch(function(){});
+  }
+  $('capBtn').onclick = function(){
+    var on = $('capState').textContent.indexOf('正在抓包') >= 0;
+    fetch('/api/capture',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action: on?'stop':'start'})})
+      .then(function(r){return r.json();}).then(function(j){ if(j&&j.status) capPaint(j.status); })
+      .catch(function(){});
+  };
+  $('keepalive').onchange = function(){
+    fetch('/api/capture',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({keepalive: $('keepalive').checked})})
+      .then(function(r){return r.json();}).then(function(j){ if(j&&j.status) capPaint(j.status); })
+      .catch(function(){});
+  };
+})();
+</script>
+</body>
+</html>

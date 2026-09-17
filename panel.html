@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kwrt 抓包控制台</title>
+<style>
+  :root{--bg:#f5f6f8;--card:#fff;--line:#e6e8ee;--line2:#eef0f4;--txt:#1f2430;--muted:#6b7280;
+    --accent:#2f6fed;--accent2:#eaf1ff;--ok:#2f9e44;--warn:#c77700;--err:#d9483b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:12px 16px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+  h1{font-size:16px;margin:0;font-weight:600}
+  .grow{flex:1}
+  a.nav{color:var(--accent);text-decoration:none;font-weight:600;white-space:nowrap;font-size:13px}
+  .wrap{padding:16px;max-width:820px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0 0 14px}
+  .card h2{font-size:14px;margin:0 0 4px;font-weight:600}
+  .card p.sub{color:var(--muted);font-size:12px;margin:0 0 14px}
+  .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0}
+  .opt{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border:1px solid var(--line);
+    border-radius:10px;cursor:pointer;margin:8px 0;transition:.15s}
+  .opt:hover{border-color:#c9cfdb;background:#fafbfd}
+  .opt.sel{border-color:var(--accent);background:var(--accent2)}
+  .opt input{margin-top:3px}
+  .opt .t{font-weight:600}
+  .opt .d{color:var(--muted);font-size:12px}
+  input[type=text],textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+    background:#fff;color:var(--txt);outline:none;width:100%}
+  textarea{min-height:120px;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:13px}
+  input:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent2)}
+  button{font:inherit;padding:9px 18px;border:1px solid var(--line);border-radius:8px;background:#fff;
+    color:var(--txt);cursor:pointer}
+  button:hover{border-color:#c9cfdb;background:#fafbfd}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button.primary:hover{background:#2a63d6}
+  button.danger{background:var(--err);border-color:var(--err);color:#fff;font-weight:600}
+  button.big{padding:12px 22px;font-size:15px}
+  .status{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+  .chip{background:#eef1f6;border-radius:8px;padding:5px 10px;font-size:12px;color:#4b5563}
+  .chip b{color:#1f2430}
+  .on{background:#e7f7ec;color:#1d7a37} .off{background:#fdecec;color:#a52a1e} .warnc{background:#fff4e0;color:#8a5b00}
+  .msg{margin:12px 0 0;padding:10px 12px;border-radius:8px;font-size:13px;display:none}
+  .msg.ok{background:#e7f7ec;color:#1d7a37;display:block}
+  .msg.err{background:#fdecec;color:#a52a1e;display:block}
+  .note{color:var(--muted);font-size:12px;margin:8px 0 0}
+  label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px;cursor:pointer;user-select:none}
+  label.chk input[type=number]{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;outline:none}
+  label.chk input[type=number]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent2)}
+  code{background:#eef1f6;padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Kwrt 抓包控制台</h1>
+  <span class="grow"></span>
+  <a class="nav" id="popout">↗ 新窗口打开</a>
+  <a class="nav" href="/body">👁 解密内容（请求/返回）</a>
+  <a class="nav" href="/packets">抓包表格</a>
+  <a class="nav" href="/doc">📖 速查</a>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>当前状态</h2>
+    <div class="status" id="status">加载中…</div>
+    <div class="row">
+      <button id="toggleOn" class="primary big">▶ 开启解密</button>
+      <button id="pauseIntercept" class="big">⏸ 暂停拦截</button>
+      <button id="turnOff" class="danger big">■ 完全停止</button>
+    </div>
+    <p class="note">
+      <b>开启解密</b>＝接管并解密（设备需装 CA 证书）。<b>暂停拦截</b>＝立刻恢复直连，代理进程留着（秒开）。
+      <b>完全停止</b>＝清规则 + 停掉代理进程，<b>最省性能</b>（平时不用就选这个）。
+    </p>
+    <div class="row">
+      <a class="nav" href="/body" style="background:#eaf1ff;border:1px solid #cdddff;border-radius:9px;padding:11px 16px;font-size:14px">
+        👁 去看解密内容（请求 / 返回正文）→
+      </a>
+      <span class="note" style="margin:0">在这里看抓到并解密的请求与响应。</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>⏱ 无人监听时自动关闭解密（省性能）</h2>
+    <p class="sub">没人打开「解密内容」页超过设定时间，就自动停掉解密，恢复直连、不占 CPU。</p>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="acEnabled"> 启用自动关闭</label>
+      <label class="chk">空闲 <input type="number" id="acMinutes" min="1" max="240" style="width:74px;padding:6px 8px;border:1px solid var(--line);border-radius:8px"> 分钟</label>
+      <button id="acSave">保存</button>
+      <span id="acMsg" class="msg"></span>
+    </div>
+    <p class="note">也可以直接点上面「■ 完全停止」手动关，不依赖这个。</p>
+  </div>
+
+  <div class="card">
+    <h2>🧹 日志记录开关（防止磁盘/内存被频繁占用）</h2>
+    <div class="status" id="logStats">读取中…</div>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="logEnabled"> 启用日志记录</label>
+      <span id="logMsg" class="msg"></span>
+    </div>
+    <p class="note" id="logHint">关闭后：解密<b>照常工作</b>（App 不受影响），但<b>不写任何记录、也不抓正文</b>，
+      同时<b>清空现有记录</b>把内存盘释放出来；再打开时从零开始记录。</p>
+    <div class="row">
+      <label class="chk">超过 <input type="number" id="logMB" min="1" max="64" step="1" style="width:74px;padding:6px 8px;border:1px solid var(--line);border-radius:8px"> MB 就裁剪</label>
+      <label class="chk">只保留最后 <input type="number" id="logLines" min="20" max="5000" step="50" style="width:84px;padding:6px 8px;border:1px solid var(--line);border-radius:8px"> 条</label>
+      <button id="logSave">保存</button>
+      <button id="logTrim">立即裁剪</button>
+      <button id="logClear" class="danger">清空日志</button>
+    </div>
+    <p class="note">记录文件在 <code>/tmp</code>（内存盘），越攒越占内存。默认 2MB / 400 条，超了自动裁剪。</p>
+    <div class="status" id="blobStats" style="margin-top:12px">读取中…</div>
+    <div class="row">
+      <button id="blobClear">清空图片/文档缓存</button>
+      <span id="blobMsg" class="msg"></span>
+    </div>
+    <p class="note">解密时抓到的<b>图片、PDF、文档</b>会另存一份供网页预览（单个 ≤1MB，总量 ≤16MB，超了自动删最旧的）。
+      这些也放在内存盘，不用了就清掉。</p>
+  </div>
+
+  <div class="card">
+    <h2>① 抓哪些设备</h2>
+    <p class="sub">全设备会同时影响其他设备；建议先只抓你自己那台。</p>
+    <label class="opt" id="optAllDev">
+      <input type="radio" name="scope" value="all">
+      <span><span class="t">全部设备（整个 LAN）</span><br><span class="d">10.0.0.0/24 上所有设备的流量都会被处理</span></span>
+    </label>
+    <label class="opt" id="optOneDev">
+      <input type="radio" name="scope" value="ip">
+      <span><span class="t">只抓指定设备</span><br><span class="d">填设备 IP，比如你手机 <code>10.0.0.102</code>，其他设备完全不受影响</span></span>
+    </label>
+    <div class="row"><input type="text" id="ip" placeholder="设备 IP，例如 10.0.0.102"></div>
+  </div>
+
+  <div class="card">
+    <h2>② 从哪些网卡抓</h2>
+    <p class="sub">不勾选＝所有来源网卡。勾选可把拦截**限制在指定网卡**（例：只拦局域网 <code>br-lan</code>，或只拦 ZeroTier <code>ztr…</code>）。</p>
+    <div id="ifaces" style="margin:6px 0"></div>
+    <p class="note">一般勾 <code>br-lan</code> 就覆盖全部有线+无线的客户端。</p>
+  </div>
+
+  <div class="card">
+    <h2>③ 解密哪些域名（关键）</h2>
+    <p class="sub">拼多多/微信/支付宝这类 App 做了「证书固定」，一旦被解密就会连不上。用「仅指定域名」可以只抓你要的，其他 App 放行、照常能用。</p>
+    <label class="opt" id="optAllDom">
+      <input type="radio" name="mode" value="all">
+      <span><span class="t">全部域名都解密（抓全包）</span><br><span class="d">⚠️ 看到的网站/接口最多；证书固定的 App 首次会失败一次，之后会被<b>自动放行</b>（见下方④），App 随即恢复</span></span>
+    </label>
+    <label class="opt" id="optListDom">
+      <input type="radio" name="mode" value="list">
+      <span><span class="t">仅解密下面这些域名（推荐）</span><br><span class="d">只有列表里的域名被解密查看，其它全部原样放行 → 拼多多等 App 恢复正常</span></span>
+    </label>
+    <label class="opt" id="optExcludeDom">
+      <input type="radio" name="mode" value="exclude">
+      <span><span class="t">全部解密，但排除下面这些域名</span><br><span class="d">抓得最全；把会崩的 App 域名填进来放行即可（填 example.com 会匹配其所有子域）</span></span>
+    </label>
+    <div class="row"><textarea id="domains" placeholder="每行一个域名，自动匹配它的子域：&#10;api.example.com&#10;pinduoduo.com&#10;example.com"></textarea></div>
+    <p class="note">规则：填 <code>example.com</code> 会同时匹配 <code>api.example.com</code> 等所有子域。</p>
+  </div>
+
+  <div class="row">
+    <button id="save" class="primary big">保存并应用</button>
+    <span id="msg" class="msg"></span>
+  </div>
+
+  <div class="card">
+    <h2>设备要装证书（一次性）</h2>
+    <p class="sub">要被解密的设备需要先安装 CA 证书：<a id="certLink" href="#" target="_blank">打开证书下载页</a></p>
+    <p class="note">Android：设置 → 安全/密码与安全 → 加密与凭据 → 安装证书 → CA 证书。装完在「信任的凭据 → 用户」里能看到 <b>Kwrt MITM CA</b>。</p>
+  </div>
+
+  <div class="card">
+    <h2>④ 自动放行名单（自愈）</h2>
+    <p class="sub">解密时如果某个域名拒绝我们的证书（App 做了「证书固定」），代理会<b>自动记住它并改为原样放行</b>，这样 App 重试一次就能恢复正常。下面是已经自动放行的域名。</p>
+    <div class="status" id="bypassBox">加载中…</div>
+    <div class="row">
+      <button id="clearBypass" class="big">清空自动放行名单</button>
+      <span id="bmsg" class="msg"></span>
+    </div>
+    <p class="note">清空后会重启解密代理，并把这些域名重新纳入解密（用于你确实想再试一次的情况）。</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  var $ = function(id){ return document.getElementById(id); };
+  function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+  function toast(text, ok){ var m=$('msg'); m.textContent=text; m.className='msg '+(ok?'ok':'err');
+    setTimeout(function(){ m.className='msg'; }, 6000); }
+
+  var state = {enabled:false, mode:'all', targets:'', domains:'', ifaces:'', avail_ifaces:[], bypass:[], autoclose:{enabled:true,minutes:5}};
+  var ifacesBuilt = false;
+  var touched = false;   // 用户是否已经动过表单：动过就不再被服务端状态覆盖
+
+  function renderIfaces(avail, sel){
+    var selSet = {};
+    String(sel||'').split(/[\n,]/).forEach(function(x){ x=x.trim(); if(x) selSet[x]=1; });
+    var h = '';
+    (avail||[]).forEach(function(n){
+      h += '<label style="display:inline-flex;align-items:center;gap:6px;margin:5px 16px 5px 0;cursor:pointer">'+
+        '<input type="checkbox" class="iface" value="'+esc(n)+'"'+(selSet[n]?' checked':'')+'> '+
+        '<span style="font-family:ui-monospace,Consolas,monospace;font-size:13px">'+esc(n)+'</span></label>';
+    });
+    $('ifaces').innerHTML = h || '<span style="color:#9aa1ad">读取不到网卡列表</span>';
+    ifacesBuilt = true;
+  }
+
+  function currentScope(){
+    var el = document.querySelector('input[name=scope]:checked');
+    return el ? el.value : 'all';
+  }
+  function currentMode(){
+    var el = document.querySelector('input[name=mode]:checked');
+    return el ? el.value : 'all';
+  }
+
+  // 只更新高亮，绝不动表单的值/勾选状态
+  function updateSel(){
+    var isAll = (currentScope() === 'all');
+    var mv = currentMode();
+    $('optAllDev').className     = 'opt'+(isAll?' sel':'');
+    $('optOneDev').className     = 'opt'+(isAll?'':' sel');
+    $('optAllDom').className     = 'opt'+(mv==='all'?' sel':'');
+    $('optListDom').className    = 'opt'+(mv==='list'?' sel':'');
+    $('optExcludeDom').className = 'opt'+(mv==='exclude'?' sel':'');
+  }
+
+  // syncForm=true 才把服务端状态写回表单（仅首次加载 / 保存成功后）；
+  // 周期刷新一律 false，避免覆盖用户正在做的选择。
+  function paint(syncForm){
+    var s = state;
+    var mv = (s.mode==='list' || s.mode==='exclude') ? s.mode : 'all';
+    var modeTxt = (mv==='list') ? '<span class="chip warnc">仅指定域名</span>'
+                : (mv==='exclude') ? '<span class="chip">全解·排除名单</span>'
+                : '<span class="chip warnc">全部域名</span>';
+    var scopeTxt = (s.targets.indexOf('/24')>=0 || s.targets==='')
+      ? '<span class="chip warnc">全部设备</span>'
+      : '<span class="chip">仅 '+esc(s.targets)+'</span>';
+    var ifTxt = s.ifaces ? '<span class="chip">网卡 '+esc(s.ifaces.replace(/[\n,]/g,'、'))+'</span>'
+                         : '<span class="chip">全部网卡</span>';
+    $('status').innerHTML =
+      (s.enabled ? '<span class="chip on">● 解密进行中</span>' : '<span class="chip off">● 解密已停止</span>') +
+      '<span class="chip">'+(s.running?'代理运行中':'代理未运行')+'</span>' + scopeTxt + ifTxt + modeTxt +
+      (s.enabled && s.viewers===0 ? '<span class="chip warnc">当前无人在看</span>' : '');
+
+    // 自动关闭解密的设置（只在首次同步时回填，避免覆盖用户输入）
+    if(syncForm && !touched && s.autoclose){
+      $('acEnabled').checked = !!s.autoclose.enabled;
+      $('acMinutes').value = s.autoclose.minutes;
+    }
+
+    if(syncForm && !touched){
+      var isAll = (s.targets==='' || s.targets.indexOf('/24')>=0);
+      var ra = document.querySelector('input[name=scope][value="all"]');
+      var ri = document.querySelector('input[name=scope][value="ip"]');
+      if(ra) ra.checked = isAll;
+      if(ri) ri.checked = !isAll;
+      $('ip').value = isAll ? '' : s.targets;
+      var rm = document.querySelector('input[name=mode][value="'+mv+'"]');
+      if(rm) rm.checked = true;
+      $('domains').value = s.domains || '';
+      if(!ifacesBuilt) renderIfaces(s.avail_ifaces, s.ifaces);
+    }
+    updateSel();
+
+    // 自动放行名单（这部分随刷新更新，无输入控件）
+    var bp = s.bypass || [];
+    if(bp.length){
+      var h = '<span class="chip warnc">已自动放行 '+bp.length+' 个域名</span>';
+      bp.slice(-60).forEach(function(d){ h += '<span class="chip" title="'+esc(d)+'">'+esc(d)+'</span>'; });
+      if(bp.length > 60) h += '<span class="chip">…</span>';
+      $('bypassBox').innerHTML = h;
+    } else {
+      $('bypassBox').innerHTML = '<span class="chip">暂无（尚未遇到证书固定的域名）</span>';
+    }
+  }
+
+  function load(first){
+    if(document.hidden && !first) return;   // 页面在后台就不刷新，省资源
+    fetch('/api/mitm', {cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
+      if(j && j.status){ state = j.status; paint(!!first); }
+    }).catch(function(){ $('status').innerHTML = '<span class="chip off">读取状态失败</span>'; });
+  }
+
+  function apply(cfg){
+    fetch('/api/mitm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg)})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j && j.ok){ state = j.status; touched = false; paint(true); toast('已应用 ✓', true); }
+        else { toast('失败：'+((j&&j.error)||'未知错误'), false); }
+      }).catch(function(e){ toast('请求失败：'+e, false); });
+  }
+
+  $('toggleOn').onclick = function(){ apply({enabled:true}); };
+  $('pauseIntercept').onclick = function(){ apply({enabled:false, stop_mode:'off'}); };
+  $('turnOff').onclick = function(){ apply({enabled:false, stop_mode:'stop'}); };
+
+  // ---- 无人监听自动关闭 ----
+  $('acSave').onclick = function(){
+    var m = $('acMsg'); m.textContent = '保存中…'; m.className = 'msg ok';
+    fetch('/api/mitm', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({autoclose_enabled:$('acEnabled').checked,
+                              autoclose_minutes:+$('acMinutes').value || 5})})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j && j.ok){ state = j.status; paint(false); m.textContent='已保存 ✓'; }
+        else { m.textContent='失败'; m.className='msg err'; }
+        setTimeout(function(){ m.className='msg'; }, 4000);
+      }).catch(function(){ m.textContent='请求失败'; m.className='msg err'; });
+  };
+
+  // ---- 日志保留 / 清理 ----
+  function logPaint(st){
+    if(!st) return;
+    $('logEnabled').checked = !!st.enabled;
+    $('logMB').value = Math.round((st.max_bytes||2097152)/1048576);
+    $('logLines').value = st.keep_lines || 400;
+    $('logStats').innerHTML =
+      '<span class="chip '+(st.enabled?'on':'off')+'">'+(st.enabled?'● 日志记录中':'● 日志已关闭')+'</span>'+
+      '<span class="chip">当前 '+(st.lines||0)+' 条 / '+
+      (Math.round((st.bytes||0)/1024))+' KB</span>'+
+      '<span class="chip">上限 '+Math.round((st.max_bytes||0)/1048576)+' MB · 保留 '+
+      (st.keep_lines||0)+' 条</span>';
+    // 关闭时把保留设置整块淡化，提示它们暂时无效
+    ['logMB','logLines'].forEach(function(id){ $(id).disabled = !st.enabled; });
+    ['logSave','logTrim','logClear'].forEach(function(id){
+      $(id).style.opacity = st.enabled ? '' : '.5';
+      $(id).disabled = !st.enabled;
+    });
+  }
+  function logLoad(){
+    fetch('/api/log', {cache:'no-store'}).then(function(r){return r.json();})
+      .then(function(j){ if(j && j.stats) logPaint(j.stats); }).catch(function(){});
+  }
+  // 日志总开关
+  $('logEnabled').onchange = function(){
+    var on = this.checked;
+    if(!on && !confirm('关闭日志会同时清空现有记录（释放内存盘），确定？')){
+      this.checked = true; return;
+    }
+    var m = $('logMsg'); m.textContent = '处理中…'; m.className = 'msg ok';
+    fetch('/api/log', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action: on ? 'enable' : 'disable'})})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j && j.stats){ logPaint(j.stats); m.textContent = on ? '已开启 ✓' : '已关闭并清空 ✓'; }
+        else { m.textContent = '失败'; m.className = 'msg err'; }
+        setTimeout(function(){ m.className='msg'; }, 4000);
+      }).catch(function(){ m.textContent='请求失败'; m.className='msg err'; });
+  };
+  function logAction(cfg, msgEl, okText){
+    var m = $(msgEl); m.textContent = '处理中…'; m.className = 'msg ok';
+    fetch('/api/log', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(cfg)})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j && j.stats) logPaint(j.stats);
+        m.textContent = (j && j.ok) ? okText : '失败';
+        m.className = (j && j.ok) ? 'msg ok' : 'msg err';
+        setTimeout(function(){ m.className='msg'; }, 4000);
+      }).catch(function(){ m.textContent='请求失败'; m.className='msg err'; });
+  }
+  function blobPaint(st){
+    if(!st) return;
+    $('blobStats').innerHTML =
+      '<span class="chip">图片/文档缓存 ' + (st.count||0) + ' 个 / ' +
+      Math.round((st.bytes||0)/1024) + ' KB</span>';
+  }
+  function blobLoad(){
+    fetch('/api/blob', {cache:'no-store'}).then(function(r){return r.json();})
+      .then(function(j){ if(j && j.stats) blobPaint(j.stats); }).catch(function(){});
+  }
+  $('blobClear').onclick = function(){
+    var m = $('blobMsg'); m.textContent = '处理中…'; m.className = 'msg ok';
+    fetch('/api/blob', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action:'clear'})})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j && j.stats){ blobPaint(j.stats); m.textContent = '已清空 ✓'; }
+        else { m.textContent = '失败'; m.className = 'msg err'; }
+        setTimeout(function(){ m.className='msg'; }, 4000);
+      }).catch(function(){ m.textContent='请求失败'; m.className='msg err'; });
+  };
+
+  $('logSave').onclick = function(){
+    logAction({action:'save', max_bytes:(+$('logMB').value||4)*1048576,
+               keep_lines:+$('logLines').value||400}, 'logMsg', '已保存 ✓');
+  };
+  $('logTrim').onclick = function(){ logAction({action:'trim'}, 'logMsg', '已裁剪 ✓'); };
+  $('logClear').onclick = function(){ logAction({action:'clear'}, 'logMsg', '已清空 ✓'); };
+
+  $('clearBypass').onclick = function(){
+    var m = $('bmsg'); m.textContent = '处理中…'; m.className = 'msg ok';
+    fetch('/api/mitm', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({action:'clearbypass'})})
+      .then(function(r){return r.json();}).then(function(j){
+        if(j && j.ok){ state = j.status; paint(false); m.textContent='已清空 ✓'; }
+        else { m.textContent = '失败'; }
+        m.className = 'msg ok';
+        setTimeout(function(){ m.className='msg'; }, 5000);
+      }).catch(function(){ m.textContent='请求失败'; m.className='msg err'; });
+  };
+  $('save').onclick = function(){
+    var scope = currentScope();
+    var mode  = currentMode();
+    var ifs = [];
+    document.querySelectorAll('.iface:checked').forEach(function(c){ ifs.push(c.value); });
+    // 保存设置时保持当前解密开关状态（解密需要显式开启，别偷偷打开）
+    var cfg = { enabled: !!state.enabled, mode:mode, domains:$('domains').value, ifaces:ifs.join('\n') };
+    if(scope==='ip'){
+      var ip = $('ip').value.trim();
+      if(!ip){ toast('请填写要抓的设备 IP', false); return; }
+      cfg.scope='ip'; cfg.ip=ip;
+    } else { cfg.scope='all'; }
+    if(mode==='list' && !$('domains').value.trim()){ toast('选了「仅指定域名」但列表是空的，请填写域名', false); return; }
+    apply(cfg);
+  };
+
+  // 点击整块选项只更新高亮；用 setTimeout 让原生勾选先生效
+  ['optAllDev','optOneDev','optAllDom','optListDom','optExcludeDom'].forEach(function(id){
+    $(id).addEventListener('click', function(){ touched = true; setTimeout(updateSel, 0); });
+  });
+  document.querySelectorAll('input[name=scope],input[name=mode]').forEach(function(r){
+    r.addEventListener('change', function(){ touched = true; updateSel(); });
+  });
+  $('ip').addEventListener('input', function(){ touched = true; });
+  $('domains').addEventListener('input', function(){ touched = true; });
+  $('ifaces').addEventListener('change', function(){ touched = true; });
+
+  load(true); logLoad(); blobLoad();
+  // 证书下载页在路由器的 80 端口（nginx），不在本服务端口上；
+  // 根相对路径 /cert.html 在 7690 下会变成 http://host:7690/cert.html 而 404。
+  (function(){
+    var port = (location.port === '7690' || location.port === '') ? '' : ':' + location.port;
+    $('certLink').href = 'http://' + location.hostname + port + '/cert.html';
+    var p = $('popout'); if(p){ p.href = location.href; p.target = '_blank'; }
+  })();
+  setInterval(function(){ load(false); }, 20000);
+  setInterval(logLoad, 60000);
+  setInterval(blobLoad, 60000);
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden){ load(false); logLoad(); }
+  });
+})();
+</script>
+</body>
+</html>

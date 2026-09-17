@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 本地/离线开发产物
+_shots/
+_prev_tmp/
+_preview*.html
+_up/
+*.log
+
+# 抓包与解密产生的数据（含隐私，绝不入库）
+*.pcapng
+mitm-body.jsonl
+mitm-blobs/
+mitm-certs/
+
+# 证书与私钥（绝不入库）
+*.key
+*.pem
+mitm-ca.crt
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

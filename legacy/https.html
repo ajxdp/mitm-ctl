@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kwrt 解密请求（HTTPS）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#fff; --line:#e6e8ee; --line2:#eef0f4;
+    --txt:#1f2430; --muted:#6b7280; --accent:#7a4ddb; --accent2:#f2ecff;
+    --get:#2f6fed; --post:#2f9e44; --connect:#8891a0; --other:#c77700;
+    --ok:#2f9e44; --redir:#c77700; --err:#d9483b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:13px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:10px 16px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+  h1{font-size:15px;margin:0;font-weight:600}
+  .dot{width:8px;height:8px;border-radius:50%;background:#c3c8d2;display:inline-block;margin-right:6px;vertical-align:middle}
+  .dot.on{background:#2f9e44;box-shadow:0 0 0 3px #2f9e4422}
+  .dot.off{background:#d9483b}
+  .stat{color:var(--muted);font-size:12px}
+  .stat b{color:var(--txt);font-weight:600}
+  .grow{flex:1}
+  a.nav{color:var(--accent);text-decoration:none;font-weight:600}
+  a.nav:hover{text-decoration:underline}
+  .toolbar{background:var(--card);border-bottom:1px solid var(--line);padding:8px 16px;
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:sticky;top:49px;z-index:9}
+  input[type=search],select{font:inherit;padding:6px 10px;border:1px solid var(--line);
+    border-radius:7px;background:#fff;color:var(--txt);outline:none}
+  input[type=search]{min-width:240px}
+  input[type=search]:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent2)}
+  button{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:7px;
+    background:#fff;color:var(--txt);cursor:pointer}
+  button:hover{border-color:#c9cfdb;background:#fafbfd}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#6b3fc9}
+  label.chk{display:inline-flex;align-items:center;gap:5px;color:var(--muted);cursor:pointer;user-select:none}
+  .wrap{padding:12px 16px 40px}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  thead th{position:sticky;top:98px;background:#fafbfd;border-bottom:1px solid var(--line);
+    text-align:left;padding:8px 10px;font-weight:600;color:#4b5563;font-size:12px;white-space:nowrap;z-index:5}
+  tbody td{padding:6px 10px;border-bottom:1px solid var(--line2);vertical-align:top;white-space:nowrap}
+  tbody tr:hover{background:#f9f7ff}
+  td.time{color:#4b5563;font-variant-numeric:tabular-nums}
+  td.ip{font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px}
+  td.url{white-space:normal;word-break:break-all;font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px}
+  td.url a{color:#185FA5;text-decoration:none}
+  td.url a:hover{text-decoration:underline}
+  .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;line-height:1.7}
+  .badge.GET{background:var(--get)} .badge.POST{background:var(--post)}
+  .badge.CONNECT{background:var(--connect)} .badge.other{background:var(--other)}
+  .st{font-weight:600} .st.ok{color:var(--ok)} .st.redir{color:var(--redir)} .st.err{color:var(--err)}
+  .cn{background:#fff2c2;border-radius:3px;padding:0 2px}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+  .pill{background:#eef1f6;border-radius:6px;padding:1px 6px;color:#4b5563;font-size:11px}
+  .warn{background:#fff8e6;border:1px solid #ffe1a8;color:#8a6d1a;border-radius:8px;padding:8px 12px;font-size:12px;margin:0 0 10px}
+</style>
+</head>
+<body>
+<header>
+  <h1><span id="dot" class="dot off"></span>Kwrt 解密请求</h1>
+  <span class="stat" id="stConn">连接中…</span>
+  <span class="stat">条数 <b id="stTotal">0</b></span>
+  <span class="grow"></span>
+  <a class="nav" href="/panel">控制台</a>
+  <a class="nav" href="/">← 回到抓包表格</a>
+</header>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="筛选：域名 / 路径 / 设备 IP…">
+  <select id="method">
+    <option value="">全部方法</option>
+    <option>GET</option><option>POST</option><option>CONNECT</option><option>其他</option>
+  </select>
+  <label class="chk"><input type="checkbox" id="noConn" checked> 隐藏 CONNECT</label>
+  <label class="chk"><input type="checkbox" id="autoscroll" checked> 自动滚动</label>
+  <span class="grow"></span>
+  <button id="pause" class="primary">暂停</button>
+  <button id="clear">清空</button>
+</div>
+
+<div class="wrap">
+  <div class="warn">这里显示的是 <b>HTTPS 被解密后</b> 的请求地址（装了我们 CA 的设备才看得到）。
+    能看到 <b>方法 / 完整 URL / 结果</b>；<b>请求与响应的正文（body）squid 不记录</b>，需要看正文请用电脑上的 mitmproxy。</div>
+  <table>
+    <thead><tr>
+      <th style="width:160px">时间</th>
+      <th style="width:130px">设备</th>
+      <th style="width:96px">方法</th>
+      <th style="width:100px">结果</th>
+      <th>URL（已解密）</th>
+    </tr></thead>
+    <tbody id="tb"></tbody>
+  </table>
+  <div class="empty" id="empty">等待解密请求…（用装过证书的设备打开个网页试试）</div>
+</div>
+
+<script>
+(function(){
+  var MAX = 3000, rows = [], shown = 0, paused = false, total = 0, dirty=false;
+  var $ = function(id){ return document.getElementById(id); };
+  var tb=$('tb'), empty=$('empty');
+  var CN_RE = /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]{2,}/g;
+
+  function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function hl(s){ return esc(s).replace(CN_RE,function(m){ return '<span class="cn">'+m+'</span>'; }); }
+  function dec(s){ try{ return decodeURIComponent(s); }catch(e){ return s; } }
+
+  function methodClass(m){
+    m=(m||'').toUpperCase();
+    if(m==='GET'||m==='POST') return m;
+    if(m==='CONNECT') return 'CONNECT';
+    return 'other';
+  }
+  function stClass(r){
+    r=(r||'');
+    if(/^TCP_(HIT|MISS|TUNNEL|REFRESH|MEM)/.test(r)) return 'ok';
+    if(/^ERR/.test(r)) return 'err';
+    if(/NONE_NONE|DENIED/.test(r)) return '';
+    return '';
+  }
+  function rowHTML(d){
+    return '<td class="time">'+esc(d.t)+'</td>'+
+      '<td class="ip">'+esc(d.client)+'</td>'+
+      '<td><span class="badge '+methodClass(d.method)+'">'+esc(d.method||'?')+'</span></td>'+
+      '<td><span class="st '+stClass(d.result)+'">'+esc(d.result||'')+'</span></td>'+
+      '<td class="url">'+ (d.url ? '<a href="'+esc(d.url)+'" target="_blank" rel="noreferrer">'+hl(dec(d.url))+'</a>' : '') +'</td>';
+  }
+  function matches(d){
+    if(noConn.checked && (d.method||'').toUpperCase()==='CONNECT') return false;
+    var m=$('method').value;
+    if(m){
+      var mm=(d.method||'').toUpperCase();
+      if(m==='其他'){ if(['GET','POST','CONNECT'].indexOf(mm)>=0) return false; }
+      else if(mm!==m) return false;
+    }
+    if(qval){ return ((d.url||'')+' '+(d.client||'')+' '+(d.method||'')).toLowerCase().indexOf(qval)>=0; }
+    return true;
+  }
+  function add(d){
+    if(!d) return;
+    total++;
+    rows.push(d);
+    if(rows.length>MAX) rows.shift();
+    if(!paused && matches(d)) append(d);
+    if(!paused) dirty=true;
+    update();
+  }
+  function append(d){
+    var tr=document.createElement('tr');
+    tr.innerHTML=rowHTML(d);
+    tb.appendChild(tr); shown++;
+  }
+  function rebuild(){
+    tb.innerHTML=''; shown=0;
+    var start=Math.max(0,rows.length-MAX);
+    for(var i=start;i<rows.length;i++){ if(matches(rows[i])) append(rows[i]); }
+    update();
+  }
+  function update(){
+    $('stTotal').textContent=total;
+    empty.style.display = shown ? 'none' : 'block';
+    if(dirty){ dirty=false; if(autoscroll.checked) window.scrollTo(0,document.body.scrollHeight); }
+  }
+
+  var qval='', qt=null;
+  var q=$('q'), noConn=$('noConn'), autoscroll=$('autoscroll');
+  q.oninput=function(){ clearTimeout(qt); qt=setTimeout(function(){ qval=q.value.trim().toLowerCase(); rebuild(); },180); };
+  $('method').onchange=rebuild;
+  noConn.onchange=rebuild;
+  $('pause').onclick=function(){ paused=!paused; this.textContent=paused?'继续':'暂停'; this.className=paused?'':'primary'; if(!paused) rebuild(); };
+  $('clear').onclick=function(){ rows=[]; total=0; rebuild(); };
+
+  var es=new EventSource('/hstream');
+  es.onopen=function(){ $('dot').className='dot on'; $('stConn').textContent='已连接'; };
+  es.onerror=function(){ $('dot').className='dot off'; $('stConn').textContent='已断开，重连中…'; };
+  es.onmessage=function(e){ try{ add(JSON.parse(e.data)); }catch(err){} };
+})();
+</script>
+</body>
+</html>
