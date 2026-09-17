@@ -12,8 +12,6 @@ Environment=PKTCAP_PORT=__PORT__
 Environment=PKTCAP_USER=__USER__
 Environment=PKTCAP_PASS=__PASS__
 Environment=MITM_CONF=__CONF__
-Environment=MITM_CA_CERT=__CA_CRT__
-Environment=MITM_CA_KEY=__CA_KEY__
 Environment=MITM_BLOB_DIR=/tmp/mitm-blobs
 Environment=PKTCAP_BODYLOG=/tmp/mitm-body.jsonl
 Restart=always

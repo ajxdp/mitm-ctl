@@ -1,0 +1,172 @@
+#!/bin/sh
+# ============================================================================
+#  mitm-ctl-setup —— 设备侧初始化/修复（幂等，可反复执行）
+#
+#  被三处共用，保证安装方式不同但结果一致：
+#    1. install.sh          一键安装脚本
+#    2. ipk 的 postinst     包管理器安装
+#    3. /etc/uci-defaults   开机自愈（配置被清掉也能恢复）
+#
+#  环境变量（都有默认值）：
+#    MITM_MODE=gateway|proxy   默认 gateway
+#    MITM_CONF=/etc/mitm
+#    MITM_CA_CERT / MITM_CA_KEY
+#    MITM_IFACE / MITM_IP      不传则自动探测
+# ============================================================================
+
+CONF="${MITM_CONF:-/etc/mitm}"
+MODE="${MITM_MODE:-gateway}"
+CA_CRT="${MITM_CA_CERT:-}"
+CA_KEY="${MITM_CA_KEY:-}"
+TARGETS=/etc/squid/mitm-targets
+NFT_SH=/usr/libexec/mitm-nft.sh
+QUIET="${MITM_QUIET:-0}"
+
+msg() { [ "$QUIET" = "1" ] || printf "    %s\n" "$1"; }
+
+# ---------------------------------------------------------------- 1) 定位 CA
+if [ -z "$CA_CRT" ] || [ -z "$CA_KEY" ]; then
+    for cand in /etc/squid/ssl/mitm-ca "$CONF/ca/mitm-ca"; do
+        if [ -f "$cand.crt" ] && [ -f "$cand.key" ]; then
+            CA_CRT="$cand.crt"
+            CA_KEY="$cand.key"
+            break
+        fi
+    done
+fi
+if [ -z "$CA_CRT" ]; then
+    CA_CRT="$CONF/ca/mitm-ca.crt"
+    CA_KEY="$CONF/ca/mitm-ca.key"
+fi
+
+mkdir -p "$CONF" "$(dirname "$CA_CRT")"
+
+if [ ! -f "$CA_CRT" ] || [ ! -f "$CA_KEY" ]; then
+    mkdir -p "$(dirname "$CA_KEY")"
+    if openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+        -keyout "$CA_KEY" -out "$CA_CRT" \
+        -subj "/CN=mitm-ctl CA/O=mitm-ctl" >/dev/null 2>&1; then
+        chmod 600 "$CA_KEY" 2>/dev/null
+        chmod 644 "$CA_CRT" 2>/dev/null
+        msg "已生成 CA 证书：$CA_CRT"
+    else
+        echo "mitm-ctl-setup: 生成 CA 失败（openssl 不可用？）" >&2
+    fi
+else
+    msg "沿用已有 CA：$CA_CRT"
+fi
+
+# ---------------------------------------------------------------- 2) 默认配置（幂等）
+[ -f "$CONF/mode" ]        || echo "all"     > "$CONF/mode"
+[ -f "$CONF/domains.txt" ] || :              > "$CONF/domains.txt"
+[ -f "$CONF/logcfg" ]      || printf "2097152\n400\n" > "$CONF/logcfg"
+[ -f "$CONF/autoclose" ]   || printf "1\n5\n" > "$CONF/autoclose"
+[ -f "$CONF/log-enable" ]  || echo "1"       > "$CONF/log-enable"
+[ -f "$CONF/ifaces" ]      || :              > "$CONF/ifaces"
+if [ ! -s "$CONF/auto-bypass.txt" ] && [ -f /usr/share/mitm/auto-bypass.default.txt ]; then
+    cp /usr/share/mitm/auto-bypass.default.txt "$CONF/auto-bypass.txt" 2>/dev/null \
+        || : > "$CONF/auto-bypass.txt"
+fi
+mkdir -p /etc/squid
+[ -f "$TARGETS" ] || echo "10.0.0.0/24" > "$TARGETS"
+msg "配置目录就绪：$CONF"
+
+# ---------------------------------------------------------------- 3) 网络探测
+# OpenWrt 21+ 是 DSA：network.lan.ifname 为空，要用 network.lan.device。
+# 绝不能拿默认路由网卡当 LAN —— 那会把 WAN IP 写进 self-ip，
+# 导致 nft 的「访问本机自身不重定向」失效，管理页会被代理拦下。
+LAN_IF="${MITM_IFACE:-}"
+LAN_IP="${MITM_IP:-}"
+LAN_NET=""
+LAN_MSK=""
+
+if [ -f /etc/openwrt_release ]; then
+    if [ -z "$LAN_IP" ]; then
+        LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null | cut -d/ -f1) || LAN_IP=""
+    fi
+    if [ -z "$LAN_IF" ]; then
+        LAN_IF=$(uci get network.lan.ifname 2>/dev/null | awk '{print $1}') || LAN_IF=""
+    fi
+    if [ -z "$LAN_IF" ]; then
+        LAN_IF=$(uci get network.lan.device 2>/dev/null) || LAN_IF=""
+    fi
+    LAN_MSK=$(uci get network.lan.netmask 2>/dev/null) || LAN_MSK=""
+fi
+
+if [ -z "$LAN_IF" ] && [ -n "$LAN_IP" ]; then
+    LAN_IF=$(ip -o -4 addr show 2>/dev/null \
+             | awk -v ip="$LAN_IP" 'index($4, ip "/") == 1 {print $2; exit}') || LAN_IF=""
+fi
+
+DEF_IF=$(ip route show default 2>/dev/null \
+         | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1) || DEF_IF=""
+DEF_IP=$(ip route show default 2>/dev/null \
+         | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1) || DEF_IP=""
+
+if [ -z "$LAN_IF" ]; then
+    LAN_IF=$(ip -o -4 addr show 2>/dev/null \
+             | awk -v d="$DEF_IF" '$2 != d && $2 != "lo" {print $2; exit}') || LAN_IF=""
+fi
+[ -n "$LAN_IF" ] || LAN_IF="$DEF_IF"
+[ -n "$LAN_IF" ] || LAN_IF="eth0"
+
+if [ -z "$LAN_IP" ]; then
+    LAN_IP=$(ip -o -4 addr show "$LAN_IF" 2>/dev/null \
+             | awk '{print $4}' | cut -d/ -f1 | head -1) || LAN_IP=""
+fi
+[ -n "$LAN_IP" ] || LAN_IP="$DEF_IP"
+[ -n "$LAN_IP" ] || LAN_IP="127.0.0.1"
+
+case "$LAN_MSK" in
+    255.255.255.0|24) LAN_NET="${LAN_IP%.*}.0/24" ;;
+    255.255.0.0|16)   LAN_NET="${LAN_IP%.*.*}.0.0/16" ;;
+    *)                LAN_NET="${LAN_IP%.*}.0/24" ;;
+esac
+
+echo "$LAN_IP" > "$CONF/self-ip"
+echo "$LAN_IF" > "$CONF/lan-if"
+if [ "$MODE" = "gateway" ]; then
+    echo "$LAN_NET" > "$TARGETS"
+    : > "$CONF/tproxy"
+else
+    rm -f "$CONF/tproxy"
+fi
+msg "网卡 $LAN_IF · 网段 $LAN_NET · 本机 $LAN_IP · 模式 $MODE"
+
+# ---------------------------------------------------------------- 4) 服务
+# 把探测结果写进服务定义（OpenWrt procd / Debian systemd 都支持 env）
+if [ -f /etc/init.d/pktcap ]; then
+    sed -i "s|PKTCAP_IFACE=[^ ]*|PKTCAP_IFACE=$LAN_IF|" /etc/init.d/pktcap 2>/dev/null || true
+fi
+if [ -f /etc/systemd/system/pktcap.service ]; then
+    sed -i "s|PKTCAP_IFACE=.*|PKTCAP_IFACE=$LAN_IF|" /etc/systemd/system/pktcap.service 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------- 5) 起服务
+if [ -f /etc/init.d/mitm ]; then
+    /etc/init.d/mitm enable   >/dev/null 2>&1
+    /etc/init.d/pktcap enable >/dev/null 2>&1
+    /etc/init.d/pktcap restart >/dev/null 2>&1 \
+        || /etc/init.d/pktcap start >/dev/null 2>&1
+    if [ "$MODE" = "gateway" ]; then
+        /etc/init.d/mitm restart >/dev/null 2>&1 || /etc/init.d/mitm start >/dev/null 2>&1
+    fi
+elif command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/mitm.service ]; then
+    systemctl enable mitm pktcap >/dev/null 2>&1
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl restart pktcap >/dev/null 2>&1
+    [ "$MODE" = "gateway" ] && systemctl restart mitm >/dev/null 2>&1
+fi
+msg "服务已启用并启动"
+
+# 关掉旧的散装 LuCI 入口（从 install.sh 老版本升级上来的情况）
+if [ -f /usr/share/luci/menu.d/luci-app-capture.json ]; then
+    rm -f /usr/share/luci/menu.d/luci-app-capture.json
+    rm -f /www/luci-static/resources/view/capture/decrypt.js
+    rm -f /www/luci-static/resources/view/capture/table.js
+    rmdir /www/luci-static/resources/view/capture 2>/dev/null
+    rm -f /tmp/luci-indexcache* 2>/dev/null
+    msg "已清理旧的 LuCI 抓包入口"
+fi
+
+exit 0

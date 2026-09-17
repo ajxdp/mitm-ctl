@@ -20,8 +20,17 @@ import hashlib
 import datetime
 import threading
 
-CA_CERT = os.environ.get("MITM_CA_CERT", "/etc/squid/ssl/mitm-ca.crt")
-CA_KEY = os.environ.get("MITM_CA_KEY", "/etc/squid/ssl/mitm-ca.key")
+def _default_ca(ext):
+    """CA 默认路径：兼容老位置（squid 目录）与新位置（/etc/mitm/ca），
+    免得服务单元和环境变量不一致时找不到证书。"""
+    for p in ("/etc/squid/ssl/mitm-ca." + ext, "/etc/mitm/ca/mitm-ca." + ext):
+        if os.path.exists(p):
+            return p
+    return "/etc/mitm/ca/mitm-ca." + ext
+
+
+CA_CERT = os.environ.get("MITM_CA_CERT") or _default_ca("crt")
+CA_KEY = os.environ.get("MITM_CA_KEY") or _default_ca("key")
 CERT_DIR = os.environ.get("MITM_CERT_DIR", "/tmp/mitm-certs")
 OUT = os.environ.get("MITM_OUT", "/tmp/mitm-body.jsonl")
 HTTP_PORT = int(os.environ.get("MITM_HTTP_PORT", "8080"))

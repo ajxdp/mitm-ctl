@@ -8,8 +8,6 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/bin/python3 /usr/share/mitm/mitm_proxy.py
 Environment=MITM_CONF=__CONF__
-Environment=MITM_CA_CERT=__CA_CRT__
-Environment=MITM_CA_KEY=__CA_KEY__
 Environment=MITM_CERT_DIR=/tmp/mitm-certs
 Environment=MITM_BLOB_DIR=/tmp/mitm-blobs
 Restart=always

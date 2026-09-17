@@ -79,7 +79,34 @@ PKTCAP_PORT=8080 PKTCAP_PASS=你的密码 sh install.sh
 
 > 安装是**幂等**的：重复执行不会覆盖你已改的配置，也不会重新生成 CA（否则已装证书的设备要重装）。
 
-### 方式二：Docker（任意系统，无需 nftables）
+### 方式二：ipk 包 / iStore（OpenWrt 专用，推荐）
+
+到 [Releases](https://github.com/ajxdp/mitm-ctl/releases) 下载 `.ipk`，传到路由器：
+
+```sh
+# ① 程序本体（会自动拉依赖）
+opkg install mitm-ctl_1.0.0-1_all.ipk
+
+# ② iStore 应用信息（图标 + 描述，可选但推荐）
+opkg install app-meta-mitm-ctl_1.0.0-1_all.ipk
+```
+
+装完即用：`/etc/init.d/mitm`、`/etc/init.d/pktcap` 已设为开机自启，LuCI 里会出现
+**服务 → HTTPS 解密抓包**，网页在 `http://<路由器IP>:7690/`。
+
+**也可以加成 opkg 源**（之后 `opkg upgrade` 能直接升级，iStore 的自定义源同理）：
+
+```sh
+echo 'src/gz mitmctl https://raw.githubusercontent.com/ajxdp/mitm-ctl/main/feed' \
+    >> /etc/opkg/customfeeds.conf
+opkg update
+opkg install mitm-ctl app-meta-mitm-ctl
+```
+
+> 卸载：`opkg remove mitm-ctl`。**配置与 CA 证书会保留**（否则重装后所有设备都要重新装证书），
+> 想彻底清理执行 `mitm-ctl purge`。
+
+### 方式三：Docker（任意系统，无需 nftables）
 
 ```sh
 git clone https://github.com/ajxdp/mitm-ctl
@@ -109,7 +136,7 @@ docker run -d --name mitm-ctl \
 > 容器内无法做 nftables 重定向，所以是**显式代理模式**。功能一个不少（解密、折叠 JSON、图片预览、重放编辑器），只是"只抓某台设备"改由你在客户端决定。
 > CA 持久化在 `/data/ca/mitm-ca.crt`（命名卷），**别删卷**，否则设备要重新装证书。
 
-### 方式三：手动
+### 方式四：手动
 
 ```sh
 # ---------- OpenWrt ----------
@@ -293,8 +320,13 @@ mitm-ctl/
 ├── systemd/                       Debian/Ubuntu systemd 服务（→ /etc/systemd/system/）
 │   ├── mitm.service
 │   └── pktcap.service
+├── luci/                          LuCI 入口（菜单 / ACL / iframe 视图）
+├── icon/mitm-ctl.png              iStore 应用图标（纯 Python 生成，无第三方依赖）
+├── feed/                          **opkg 源**：Packages(.gz) + 两个 ipk（Release 与在线源共用）
+├── bin/mitm-ctl-setup             设备侧初始化脚本（install.sh 与 ipk 共用，保证结果一致）
 ├── tools/
 │   ├── deploy.sh                  **改完代码一键部署**（归一化 LF + 上传 + 重启 + 校验）
+│   ├── build-pkg.py               **构建 ipk + opkg 源索引**（含出厂自检）
 │   ├── smoke-test.sh              安装后回归验证（页面/接口/开关/解密链路）
 │   ├── gen_preview.py             离线预览生成器（开发用）
 │   └── test.pcap                  抓包页测试数据
@@ -340,6 +372,26 @@ ssh root@10.0.0.1 '/etc/init.d/mitm restart'
 
 > `tools/smoke-test.sh` 可在安装后跑一遍完整回归（5 个页面 + 证书页 + 解密链路 + 开关 + 主动发包）：
 > `ssh root@10.0.0.1 'sh /tmp/smoke.sh'`
+
+---
+
+## 📦 自己打包（改完代码发新版本）
+
+```sh
+python3 tools/build-pkg.py --version 1.1.0
+```
+
+产出 `dist/*.ipk` + `feed/`（`Packages`、`Packages.gz` 与两个 ipk）。
+`feed/` 入库后即可当 opkg 源用；把 `dist/` 里的 ipk 传到 GitHub Releases 供人下载。
+
+打包器有两个防坑设计：
+- **模板替换**：`initd/` 是模板（`install.sh` 用 sed 填值），打包时会先替换成真实默认值 ——
+  否则会出现 `PKTCAP_PORT=__PORT__` → `int("__PORT__")` 让服务陷入崩溃重启（真机踩过）。
+- **出厂自检**：把生成的 ipk 解回来扫一遍，发现任何未替换的 `__X__` 直接构建失败。
+
+> ⚠️ **ipk 格式随 OpenWrt 版本而变**：OpenWrt 24.10+ / Kwrt 25.x 的 ipk 是
+> **gzip 压缩的 tar**（内含 `./debian-binary` + `./data.tar.gz` + `./control.tar.gz`）；
+> 23.05 及更早是 **ar 归档**。默认产出新格式，老系统用 `--format=ar`。
 
 ---
 

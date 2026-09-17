@@ -118,6 +118,40 @@ ssh root@10.0.0.1 'cat > /tmp/smoke.sh' < tools/smoke-test.sh
 ssh root@10.0.0.1 'sh /tmp/smoke.sh'
 ```
 
+### 打包成 ipk / 加到 opkg 源
+
+```sh
+python3 tools/build-pkg.py --version 1.0.0     # 产出 dist/*.ipk 与 feed/
+```
+
+| 产物 | 用途 |
+|---|---|
+| `dist/mitm-ctl_<v>-1_all.ipk` | 主包：程序 + 服务 + LuCI 入口 + setup 脚本 |
+| `dist/app-meta-mitm-ctl_<v>-1_all.ipk` | iStore 元数据：描述 + 图标（`/usr/lib/opkg/meta/*.json`） |
+| `feed/Packages(.gz)` + 两个 ipk | opkg 源，`src/gz mitmctl <feed 地址>` 即可 opkg/iStore 安装升级 |
+
+真机安装：
+
+```sh
+opkg install mitm-ctl_1.0.0-1_all.ipk app-meta-mitm-ctl_1.0.0-1_all.ipk
+opkg remove  mitm-ctl          # 配置与 CA 会保留；彻底清理用 mitm-ctl purge
+```
+
+**踩过的坑（都在打包器里固化成了防护）**：
+1. **ipk 格式分两代**：OpenWrt 24.10+/Kwrt 25.x 用的是
+   **gzip 压缩 tar**（`./debian-binary` + `./data.tar.gz` + `./control.tar.gz`），
+   不是 ar 归档。用 ar 会报 `pkg_init_from_file: Malformed package file`。
+   拿到真包对比头部字节（`1f 8b` vs `!<arch>`）最快分辨。`--format=ar` 留给 23.05 及更早。
+2. **占位符必须替换**：`initd/` 里的 `__PORT__` 等是给 `install.sh` 的 sed 用的，
+   ipk 里若原样带入 → `int("__PORT__")` 崩溃、procd 无限重启。打包器现在会替换并自检。
+3. **CA 路径别用环境变量硬塞**：服务单元里写死 `MITM_CA_CERT` 容易与 `mitm-ctl-setup`
+   探测到的路径不一致（老设备在 `/etc/squid/ssl/`，新装在世界 `/etc/mitm/ca/`）。
+   现在代码里做**位置探测**（两个目录都找），单元文件不再传 CA 路径。
+4. **依赖包名要用设备实测**：nft 由 `nftables-json` 提供（没有 `nftables` 这个包）；
+   用 `opkg files <pkg>` 反查某个二进制属于哪个包。
+5. 该设备 `/etc/opkg.conf` **未开启签名校验**，所以未签名 ipk 可直接装；
+   若目标开启了 `check_signature`，需要先用 usign 签名并把公钥放进 `/etc/opkg/keys/`。
+
 ### Docker
 
 ```sh
@@ -145,6 +179,10 @@ docker compose down               # 数据在命名卷 mitm-data，别删（CA �
 | `/usr/share/pktcap/legacy/https.html` | **已废弃**（`/https` 现 302 到 `/body`） | 不用管 |
 | `/etc/systemd/system/{mitm,pktcap}.service` | Debian/Ubuntu 的服务单元（占位符由 install.sh 填好） | 环境变量、内存上限 |
 | `/data/{conf,ca}`（容器） | 容器内的配置与 CA（挂在命名卷上） | 持久化，别删 |
+| `/usr/share/luci/menu.d/luci-app-mitmctl.json` | LuCI 菜单（服务 → HTTPS 解密抓包） | 入口标题/排序 |
+| `/www/luci-static/resources/view/mitmctl/*.js` | LuCI 内嵌页面（iframe 指向 7690） | 入口页 |
+| `/usr/libexec/mitm-ctl-setup` | **设备侧初始化**（CA/配置/网卡探测/起服务），install.sh 与 ipk 共用 | 改初始化逻辑就改这里 |
+| repo `feed/` | opkg 源：Packages + ipk | 发新版后重新构建 |
 
 
 ### 配置（都在 `/etc/mitm/`）

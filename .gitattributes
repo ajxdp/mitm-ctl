@@ -21,3 +21,5 @@ docker/*        text eol=lf
 *.jpg           binary
 *.ico           binary
 *.gz            binary
+
+*.ipk           binary

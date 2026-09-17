@@ -345,138 +345,36 @@ if [ -f "$SRC/bin/mitm-nft.sh" ]; then
     ok "$NFT_SH"
 fi
 
+# LuCI 入口（菜单 / 视图 / ACL）—— 让「服务 → HTTPS 解密抓包」能进
+if [ -d "$SRC/luci" ]; then
+    mkdir -p /usr/share/luci/menu.d /usr/share/rpcd/acl.d /www/luci-static/resources/view/mitmctl
+    cp "$SRC/luci/menu.d/"*.json /usr/share/luci/menu.d/ 2>/dev/null || true
+    cp "$SRC/luci/acl.d/"*.json  /usr/share/rpcd/acl.d/   2>/dev/null || true
+    cp "$SRC/luci/view/mitmctl/"*.js /www/luci-static/resources/view/mitmctl/ 2>/dev/null || true
+    rm -f /tmp/luci-indexcache* 2>/dev/null || true
+    ok "LuCI 菜单与页面（/admin/services/mitmctl）"
+fi
+
 # ============================================================================
-# 5. CA 证书（幂等：已存在就沿用）
+# 5. 安装自启服务（OpenWrt → procd，Debian → systemd）
 # ============================================================================
-say "准备 CA 证书"
+# 先定 CA 路径（真正生成交给 mitm-ctl-setup，这里只是给服务单元填路径）
 CA_CRT=""
 CA_KEY=""
-# 兼容老安装（squid 目录）+ 新安装（/etc/mitm/ca）
 for cand in "/etc/squid/ssl/mitm-ca" "$CONFDIR/ca/mitm-ca"; do
     if [ -f "$cand.crt" ] && [ -f "$cand.key" ]; then
-        CA_CRT="$cand.crt"; CA_KEY="$cand.key"; break
+        CA_CRT="$cand.crt"
+        CA_KEY="$cand.key"
+        break
     fi
 done
 if [ -z "$CA_CRT" ]; then
-    mkdir -p "$CONFDIR/ca"
     CA_CRT="$CONFDIR/ca/mitm-ca.crt"
     CA_KEY="$CONFDIR/ca/mitm-ca.key"
-    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -keyout "$CA_KEY" -out "$CA_CRT" \
-        -subj "/CN=mitm-ctl CA/O=mitm-ctl" >/dev/null 2>&1 \
-        || die "生成 CA 证书失败（openssl 不可用？）"
-    chmod 600 "$CA_KEY"; chmod 644 "$CA_CRT"
-    ok "已生成新 CA：$CA_CRT"
-else
-    FP=$(openssl x509 -in "$CA_CRT" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | cut -c1-24)
-    ok "沿用已有 CA（$CA_CRT）"
-    dim "指纹 $FP…"
 fi
 
-# ============================================================================
-# 6. 配置默认值（全部幂等，不覆盖用户已改的设置）
-# ============================================================================
-say "初始化配置"
-mkdir -p "$CONFDIR"
-[ -f "$CONFDIR/mode" ]            || echo "all"          > "$CONFDIR/mode"
-[ -f "$CONFDIR/domains.txt" ]     || :                  > "$CONFDIR/domains.txt"
-[ -f "$CONFDIR/logcfg" ]          || printf "2097152\n400\n" > "$CONFDIR/logcfg"
-[ -f "$CONFDIR/autoclose" ]       || printf "1\n5\n"    > "$CONFDIR/autoclose"
-[ -f "$CONFDIR/log-enable" ]      || echo "1"           > "$CONFDIR/log-enable"
-if [ ! -s "$CONFDIR/auto-bypass.txt" ]; then
-    if [ -f "$SRC/bin/auto-bypass.default.txt" ]; then
-        cp "$SRC/bin/auto-bypass.default.txt" "$CONFDIR/auto-bypass.txt"
-    else
-        : > "$CONFDIR/auto-bypass.txt"
-    fi
-fi
-[ -f "$CONFDIR/ifaces" ] || : > "$CONFDIR/ifaces"
-mkdir -p /etc/squid
-[ -f /etc/squid/mitm-targets ] || echo "10.0.0.0/24" > /etc/squid/mitm-targets
-ok "配置目录 $CONFDIR（mode / domains / 日志上限 / 自动关闭 / 放行名单）"
-
-# ============================================================================
-# 7. 网络参数探测
-# ============================================================================
-LAN_IP=""
-LAN_IF=""
-LAN_NET=""
-LAN_MSK=""
-
-if [ "$OS" = "openwrt" ]; then
-    LAN_IP=$(uci get network.lan.ipaddr 2>/dev/null | cut -d/ -f1) || LAN_IP=""
-    # DSA（OpenWrt 21+）用 network.lan.device；老版本用 network.lan.ifname
-    LAN_IF=$(uci get network.lan.ifname 2>/dev/null | awk '{print $1}') || LAN_IF=""
-    if [ -z "$LAN_IF" ]; then
-        LAN_IF=$(uci get network.lan.device 2>/dev/null) || LAN_IF=""
-    fi
-    LAN_MSK=$(uci get network.lan.netmask 2>/dev/null) || LAN_MSK=""
-fi
-
-# 用 LAN IP 反查它挂在哪个网卡上 —— 这一步最可靠
-if [ -z "$LAN_IF" ] && [ -n "$LAN_IP" ]; then
-    LAN_IF=$(ip -o -4 addr show 2>/dev/null \
-             | awk -v ip="$LAN_IP" 'index($4, ip "/") == 1 {print $2; exit}') || LAN_IF=""
-fi
-
-DEF_IF=$(ip route show default 2>/dev/null \
-         | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1) || DEF_IF=""
-DEF_IP=$(ip route show default 2>/dev/null \
-         | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1) || DEF_IP=""
-
-# 非 OpenWrt：LAN = 除默认路由网卡外的第一个网卡
-if [ -z "$LAN_IF" ]; then
-    LAN_IF=$(ip -o -4 addr show 2>/dev/null \
-             | awk -v d="$DEF_IF" '$2 != d && $2 != "lo" {print $2; exit}') || LAN_IF=""
-fi
-if [ -z "$LAN_IF" ]; then
-    LAN_IF="$DEF_IF"
-fi
-if [ -z "$LAN_IF" ]; then
-    LAN_IF="eth0"
-fi
-
-# 本机 LAN IP：优先取 LAN 网卡上的真实地址（绝不能用 WAN IP）
-if [ -z "$LAN_IP" ]; then
-    LAN_IP=$(ip -o -4 addr show "$LAN_IF" 2>/dev/null \
-             | awk '{print $4}' | cut -d/ -f1 | head -1) || LAN_IP=""
-fi
-if [ -z "$LAN_IP" ]; then
-    LAN_IP="$DEF_IP"
-fi
-if [ -z "$LAN_IP" ]; then
-    LAN_IP="127.0.0.1"
-fi
-
-# 网段
-case "$LAN_MSK" in
-    255.255.255.0|24) LAN_NET="${LAN_IP%.*}.0/24" ;;
-    255.255.0.0|16)   LAN_NET="${LAN_IP%.*.*}.0.0/16" ;;
-    *)                LAN_NET="${LAN_IP%.*}.0/24" ;;
-esac
-
-if [ "$MODE" = "gateway" ]; then
-    echo "$LAN_NET" > /etc/squid/mitm-targets
-fi
-
-# nft 规则要排除「访问本机自身」的流量，必须用 LAN IP；
-# 写成 WAN IP 的话，局域网设备访问路由器管理页会被代理拦下
-SELFIP="$LAN_IP"
-echo "$SELFIP" > "$CONFDIR/self-ip"
-
-# 透明模式标记（供 init 脚本判断要不要下发 nft 规则）
-if [ "$MODE" = "gateway" ]; then
-    echo "1" > "$CONFDIR/tproxy"
-else
-    rm -f "$CONFDIR/tproxy"
-fi
-ok "网卡 $LAN_IF · 网段 $LAN_NET · 本机 $SELFIP · 模式 $MODE"
-
-# ============================================================================
-# 8. 安装自启服务
-# ============================================================================
 render() {
-    # render <模板> <目标>  —— 替换占位符
+    # render <模板> <目标> —— 替换占位符
     sed -e "s|__CONF__|$CONFDIR|g" \
         -e "s|__CA_CRT__|$CA_CRT|g" \
         -e "s|__CA_KEY__|$CA_KEY|g" \
@@ -504,9 +402,31 @@ else
     warn "跳过服务安装（没有 procd / systemd）"
 fi
 
-# 透明模式：开启转发 + 内核参数
+# ============================================================================
+# 6. 设备侧初始化（与 ipk 安装共用同一脚本，保证两种安装方式结果一致）
+# ============================================================================
+say "初始化 CA / 配置 / 网络 / 服务"
+if [ -f "$SRC/bin/mitm-ctl-setup" ]; then
+    cp "$SRC/bin/mitm-ctl-setup" /usr/libexec/mitm-ctl-setup
+    chmod 755 /usr/libexec/mitm-ctl-setup
+fi
+if [ -x /usr/libexec/mitm-ctl-setup ]; then
+    MITM_MODE="$MODE" MITM_CONF="$CONFDIR" \
+    MITM_CA_CERT="$CA_CRT" MITM_CA_KEY="$CA_KEY" \
+        sh /usr/libexec/mitm-ctl-setup
+else
+    die "缺少 /usr/libexec/mitm-ctl-setup"
+fi
+# 回读初始化结果（CA 可能是在 setup 里新生成的）
+if [ ! -f "$CA_CRT" ] && [ -f "$CONFDIR/ca/mitm-ca.crt" ]; then
+    CA_CRT="$CONFDIR/ca/mitm-ca.crt"
+fi
+if [ -f "$CONFDIR/self-ip" ]; then
+    LAN_IP=$(cat "$CONFDIR/self-ip") || LAN_IP=""
+fi
+
+# 透明模式：开启 IP 转发（Debian 需要；OpenWrt 本来就有）
 if [ "$MODE" = "gateway" ]; then
-    say "透明模式：开启 IP 转发"
     sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
     if [ -d /etc/sysctl.d ]; then
         printf "net.ipv4.ip_forward=1\n" > /etc/sysctl.d/99-mitm-ctl.conf
@@ -517,24 +437,11 @@ if [ "$MODE" = "gateway" ]; then
     ok "net.ipv4.ip_forward=1"
 fi
 
-# ============================================================================
-# 9. 启动
-# ============================================================================
-say "启动服务"
-if [ "$HAS_PROCD" = "1" ]; then
-    /etc/init.d/mitm enable   >/dev/null 2>&1 || true
-    /etc/init.d/pktcap enable >/dev/null 2>&1 || true
-    /etc/init.d/mitm restart   >/dev/null 2>&1 || /etc/init.d/mitm start   >/dev/null 2>&1 || true
-    /etc/init.d/pktcap restart >/dev/null 2>&1 || /etc/init.d/pktcap start >/dev/null 2>&1 || true
-elif [ "$HAS_SYSTEMD" = "1" ]; then
-    systemctl enable mitm pktcap  >/dev/null 2>&1 || true
-    systemctl restart mitm        >/dev/null 2>&1 || systemctl start mitm   >/dev/null 2>&1 || true
-    systemctl restart pktcap      >/dev/null 2>&1 || systemctl start pktcap >/dev/null 2>&1 || true
-fi
+# 等端口起来
 i=0
 while [ "$i" -lt 10 ]; do
     sleep 1
-    i=$((i+1))
+    i=$((i + 1))
     if command -v curl >/dev/null 2>&1; then
         curl -s -o /dev/null -m 2 "http://127.0.0.1:$PORT/cert" 2>/dev/null && break
     elif netstat -ltn 2>/dev/null | grep -q ":$PORT "; then
@@ -545,7 +452,7 @@ while [ "$i" -lt 10 ]; do
 done
 
 # ============================================================================
-# 10. 自检
+# 7. 自检
 # ============================================================================
 say "自检"
 if [ "$HAS_SYSTEMD" = "1" ]; then
@@ -561,10 +468,12 @@ C_WEB=$(code /body) || C_WEB="000"
 C_CERT=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/cert" 2>/dev/null) || C_CERT="000"
 
 # ============================================================================
-# 11. 打印使用信息
+# 8. 打印使用信息
 # ============================================================================
 HOST_IP=$(cat "$CONFDIR/self-ip" 2>/dev/null) || HOST_IP=""
 [ -n "$HOST_IP" ] || HOST_IP="127.0.0.1"
+LAN_NET=$(cat /etc/squid/mitm-targets 2>/dev/null | head -1) || LAN_NET=""
+[ -n "$LAN_NET" ] || LAN_NET="10.0.0.0/24"
 BASE="http://$HOST_IP:$PORT"
 
 echo

@@ -1,0 +1,23 @@
+{
+	"admin/services/mitmctl": {
+		"title": "HTTPS 解密抓包",
+		"order": 60,
+		"action": { "type": "firstchild" },
+		"depends": { "acl": [ "luci-app-mitmctl" ] }
+	},
+	"admin/services/mitmctl/decrypt": {
+		"title": "解密内容",
+		"order": 1,
+		"action": { "type": "view", "path": "mitmctl/decrypt" }
+	},
+	"admin/services/mitmctl/panel": {
+		"title": "控制台",
+		"order": 2,
+		"action": { "type": "view", "path": "mitmctl/panel" }
+	},
+	"admin/services/mitmctl/packets": {
+		"title": "抓包表格",
+		"order": 3,
+		"action": { "type": "view", "path": "mitmctl/packets" }
+	}
+}

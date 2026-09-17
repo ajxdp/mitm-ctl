@@ -727,12 +727,20 @@ def serve_sse(conn):
         CAP.remove_client(conn)
 
 
+def _default_ca(ext):
+    """与 mitm_proxy 保持一致：老位置（squid）优先，其次 /etc/mitm/ca。"""
+    for p in ("/etc/squid/ssl/mitm-ca." + ext, "/etc/mitm/ca/mitm-ca." + ext):
+        if os.path.exists(p):
+            return p
+    return "/etc/mitm/ca/mitm-ca." + ext
+
+
 def ca_cert_path():
-    return os.environ.get("MITM_CA_CERT", "/etc/squid/ssl/mitm-ca.crt")
+    return os.environ.get("MITM_CA_CERT") or _default_ca("crt")
 
 
 def ca_key_path():
-    return os.environ.get("MITM_CA_KEY", "/etc/squid/ssl/mitm-ca.key")
+    return os.environ.get("MITM_CA_KEY") or _default_ca("key")
 
 
 CERT_PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">

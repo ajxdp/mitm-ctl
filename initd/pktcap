@@ -7,7 +7,7 @@ STOP=10
 start_service() {
 	procd_open_instance
 	procd_set_param command /usr/bin/python3 /usr/share/pktcap/pktcap_server.py
-	procd_set_param env PKTCAP_IFACE=__LAN_IF__ PKTCAP_PORT=__PORT__ PKTCAP_USER=__USER__ PKTCAP_PASS=__PASS__ MITM_CONF=__CONF__ MITM_CA_CERT=__CA_CRT__ MITM_CA_KEY=__CA_KEY__
+	procd_set_param env PKTCAP_IFACE=__LAN_IF__ PKTCAP_PORT=__PORT__ PKTCAP_USER=__USER__ PKTCAP_PASS=__PASS__ MITM_CONF=__CONF__
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1

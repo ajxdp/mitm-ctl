@@ -1,0 +1,11 @@
+{
+	"luci-app-mitmctl": {
+		"description": "HTTPS 解密抓包（mitm-ctl）",
+		"read": {
+			"cgi-io": [ "exec" ],
+			"file": { "/usr/share/pktcap/CHEATSHEET.md": [ "read" ] },
+			"ubus": { "luci": [ "getBoardJSON" ] }
+		},
+		"write": {}
+	}
+}
