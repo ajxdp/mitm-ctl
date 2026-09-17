@@ -32,6 +32,11 @@ RUN apt-get update \
         openssl curl tzdata tcpdump ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# cryptography 用于动态签发叶子证书（mitm_proxy.py 必需）。
+# 网络受限时可换源：docker compose build --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" cryptography
+
 WORKDIR /opt/mitm-ctl
 
 COPY pktcap_server.py mitm_proxy.py body.html panel.html index.html CHEATSHEET.md ./
