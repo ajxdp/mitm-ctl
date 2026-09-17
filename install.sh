@@ -76,6 +76,12 @@ mitm-ctl 一键安装（OpenWrt / Kwrt · Debian / Ubuntu · 其他 Linux）
 
   在线安装（无需 clone）：
     curl -fsSL https://raw.githubusercontent.com/ajxdp/mitm-ctl/main/install.sh | sh
+    # 下载不通时走代理： https_proxy=http://127.0.0.1:8080 sh install.sh
+
+  可用环境变量覆盖下载源：
+    MITM_BRANCH=main            分支
+    MITM_RAW=<raw 镜像地址>     逐文件下载用的基地址
+    MITM_TARBALL=<整包地址>     整包下载用的地址
 
   安装后：
     控制台 http://<本机IP>:7690/panel     装证书 http://<本机IP>:7690/cert
@@ -97,6 +103,19 @@ if [ "$WANT_UNINSTALL" = "1" ]; then
     fi
     die "找不到 uninstall.sh，请从仓库目录运行"
 fi
+
+# ---------------------------------------------------------------- 下载封装
+# 优先 curl，其次 wget；失败返回非零（供回退逻辑判断）
+fetch() {                       # fetch <url> <outfile>
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 15 --max-time 180 "$1" -o "$2" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$2" "$1" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
 
 # ============================================================================
 # 1. 识别系统
@@ -243,18 +262,56 @@ fi
 
 TMPDL=""
 if [ -z "$SRC" ]; then
-    say "未在本地找到源码，从 GitHub 下载（$REPO@$BRANCH）"
+    say "未在本地找到源码，从 GitHub 取（$REPO@$BRANCH）"
     TMPDL=$(mktemp -d 2>/dev/null || echo "/tmp/mitm-ctl-dl.$$")
     mkdir -p "$TMPDL"
-    URL="https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$URL" -o "$TMPDL/src.tgz" || die "下载失败：$URL"
-    else
-        wget -qO "$TMPDL/src.tgz" "$URL" || die "下载失败：$URL"
+
+    # ---- 方式一：整包 tarball（一次请求，最快）
+    TAR_URL="${MITM_TARBALL:-https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz}"
+    if fetch "$TAR_URL" "$TMPDL/src.tgz" && tar xzf "$TMPDL/src.tgz" -C "$TMPDL" 2>/dev/null; then
+        if [ -f "$TMPDL/mitm-ctl-$BRANCH/pktcap_server.py" ]; then
+            SRC="$TMPDL/mitm-ctl-$BRANCH"
+            ok "已下载整包"
+        fi
     fi
-    tar xzf "$TMPDL/src.tgz" -C "$TMPDL" || die "解压失败"
-    SRC="$TMPDL/mitm-ctl-$BRANCH"
-    [ -f "$SRC/pktcap_server.py" ] || die "压缩包结构异常，找不到 pktcap_server.py"
+
+    # ---- 方式二：逐文件从 raw 取
+    # 实测有些环境（如配了透明代理的路由器）直连 codeload 会 TLS 中断，
+    # 而 raw.githubusercontent.com 通常正常，所以这里兜底。
+    if [ -z "$SRC" ]; then
+        dim "整包下载失败，改为逐文件下载（raw 主机通常更通）"
+        RAW="${MITM_RAW:-https://raw.githubusercontent.com/$REPO/$BRANCH}"
+        mkdir -p "$TMPDL/raw"
+        MISS=0
+        for rel in pktcap_server.py mitm_proxy.py body.html panel.html index.html \
+                   CHEATSHEET.md bin/mitm-ctl bin/mitm-nft.sh bin/auto-bypass.default.txt \
+                   initd/mitm initd/pktcap systemd/mitm.service systemd/pktcap.service; do
+            mkdir -p "$TMPDL/raw/$(dirname "$rel")"
+            if fetch "$RAW/$rel" "$TMPDL/raw/$rel"; then
+                printf "      · %s\n" "$rel"
+            else
+                warn "取不到 $rel"
+                MISS=$((MISS + 1))
+            fi
+        done
+        if [ -f "$TMPDL/raw/pktcap_server.py" ] && [ -f "$TMPDL/raw/mitm_proxy.py" ]; then
+            SRC="$TMPDL/raw"
+        fi
+        [ "$MISS" -gt 0 ] && dim "有 $MISS 个文件没取到（非必需的不影响安装）"
+    fi
+
+    if [ -z "$SRC" ]; then
+        echo
+        warn "从 GitHub 取源码失败。试试这几种办法："
+        dim "1) 本机下好仓库再拷过去（最稳）："
+        dim "   scp -r mitm-ctl root@<设备IP>:/tmp/ && ssh root@<设备IP> 'sh /tmp/mitm-ctl/install.sh'"
+        dim "2) 走代理下载："
+        dim "   https_proxy=http://<代理IP>:8080 sh install.sh"
+        dim "3) 换镜像或分支："
+        dim "   MITM_RAW=https://<你的镜像>/mitm-ctl/$BRANCH sh install.sh"
+        dim "   MITM_BRANCH=main sh install.sh"
+        die "无法获取源码"
+    fi
     ok "已下载到 $SRC"
 fi
 [ -f "$SRC/pktcap_server.py" ] || die "源码目录缺少 pktcap_server.py：$SRC"
