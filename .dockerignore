@@ -1,0 +1,34 @@
+# 镜像里只需要运行必需的文件
+.git
+.gitattributes
+.gitignore
+.github
+
+# 文档 / 开发工具 / 部署脚本（镜像里用不到）
+docs
+tools
+legacy
+systemd
+initd
+bin/mitm-ctl
+bin/mitm-nft.sh
+install.sh
+uninstall.sh
+README.md
+
+# 本地构建与抓包产物
+_shots
+_prev_tmp
+_preview*.html
+_*.py
+_*.sh
+__pycache__
+*.pyc
+*.log
+*.pcap
+*.pcapng
+*.key
+*.pem
+mitm-body.jsonl
+mitm-blobs
+mitm-certs

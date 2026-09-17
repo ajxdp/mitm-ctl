@@ -1,4 +1,5 @@
 #!/bin/sh /etc/rc.common
+# mitm-ctl 解密代理（OpenWrt procd 服务）
 USE_PROCD=1
 START=91
 STOP=11
@@ -6,11 +7,13 @@ STOP=11
 start_service() {
 	procd_open_instance
 	procd_set_param command /usr/bin/python3 /usr/share/mitm/mitm_proxy.py
+	procd_set_param env MITM_CONF=__CONF__ MITM_CA_CERT=__CA_CRT__ MITM_CA_KEY=__CA_KEY__ MITM_CERT_DIR=/tmp/mitm-certs MITM_BLOB_DIR=/tmp/mitm-blobs
 	procd_set_param respawn
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_close_instance
-	/usr/libexec/mitm-nft.sh apply
+	# 仅在「透明模式」下才下发重定向规则
+	[ -f /etc/mitm/tproxy ] && /usr/libexec/mitm-nft.sh apply
 }
 
 stop_service() {

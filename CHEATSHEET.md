@@ -74,6 +74,63 @@ mitm-ctl status  # 看进程/监听/规则/CA
 
 ---
 
+## 一点五、安装与部署（跨系统）
+
+### 全新安装（自动识别 OpenWrt / Debian）
+
+```sh
+# 在线一键（无需 clone）
+curl -fsSL https://raw.githubusercontent.com/ajxdp/mitm-ctl/main/install.sh | sh
+
+# 或本地仓库
+sh install.sh                      # 自动判断系统与模式
+sh install.sh --mode=proxy         # 显式代理（不装 nft 规则）
+sh install.sh --mode=gateway       # 透明模式（本机当网关）
+sh install.sh --check              # 只自检
+PKTCAP_PASS=你的密码 sh install.sh   # 覆盖默认口令
+```
+
+| 系统 | 默认模式 | init |
+|---|---|---|
+| OpenWrt / Kwrt | `gateway`（透明重定向，设备免设置） | procd（`initd/`） |
+| Debian / Ubuntu / 其它 | `proxy`（客户端填代理 `IP:8080`） | systemd（`systemd/`） |
+| Docker | `proxy` | 容器自管（`docker/entrypoint.sh`） |
+
+安装是**幂等**的：重复跑不会覆盖已改配置，也不会重生 CA。
+
+### 改完代码一键部署（推荐）
+
+```sh
+sh tools/deploy.sh root@10.0.0.1              # 归一化LF → 语法自检 → 上传 → md5校验 → 重启 → 页面自检
+sh tools/deploy.sh root@10.0.0.1 --no-restart
+```
+
+> ⚠️ **Windows 上写代码必看**：Write/Edit 工具与编辑器很容易写出 **CRLF**，
+> 而 CRLF 的 shell 脚本拷到 busybox 上会直接 `not found` / `set: -: invalid option`。
+> `tools/deploy.sh` 每次都会先归一化，用它就不会中招。
+> 自查用 `git ls-files --eol | grep w/crlf`（应为空）——
+> **别用 grep 去数回车符，在 Git Bash 里会误报全命中**。
+
+### 安装后回归验证
+
+```sh
+ssh root@10.0.0.1 'cat > /tmp/smoke.sh' < tools/smoke-test.sh
+ssh root@10.0.0.1 'sh /tmp/smoke.sh'
+```
+
+### Docker
+
+```sh
+docker compose up -d --build      # 构建 + 启动
+docker compose logs -f
+docker compose down               # 数据在命名卷 mitm-data，别删（CA 在里面）
+```
+
+容器是显式代理模式：`/cert` 装证书 → 客户端代理填 `宿主机IP:8080` → `/body` 看内容。
+容器里没有 nft，`pktcap_server` 会自动把 `enabled` 退化为「代理进程在跑」。
+
+---
+
 ## 二、文件地图（改东西去这里）
 
 ### 运行时代码
@@ -86,6 +143,9 @@ mitm-ctl status  # 看进程/监听/规则/CA
 | `/usr/share/pktcap/panel.html` | 控制台（开关、范围、域名、自动关闭、日志） | 控制项 |
 | `/usr/share/pktcap/index.html` | 抓包表格页（tcpdump 原始包） | 包列表展示 |
 | `/usr/share/pktcap/legacy/https.html` | **已废弃**（`/https` 现 302 到 `/body`） | 不用管 |
+| `/etc/systemd/system/{mitm,pktcap}.service` | Debian/Ubuntu 的服务单元（占位符由 install.sh 填好） | 环境变量、内存上限 |
+| `/data/{conf,ca}`（容器） | 容器内的配置与 CA（挂在命名卷上） | 持久化，别删 |
+
 
 ### 配置（都在 `/etc/mitm/`）
 

@@ -38,59 +38,107 @@
 
 ## 📦 安装
 
-### 方式一：一键脚本（推荐）
+### 方式一：一键脚本（推荐 · 自动识别系统）
 
-把本仓库拷到路由器上（`scp` 或直接在路由器上 `git clone`），然后：
+**支持 OpenWrt / Kwrt、Debian / Ubuntu，以及其它 Linux。** 脚本会自动判断系统、装依赖、选 init 系统（procd / systemd）、挑合适的运行模式。
+
+**在设备上直接跑**（无需先 clone）：
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/ajxdp/mitm-ctl/main/install.sh | sh
+```
+
+**或者先下载仓库再装：**
+
+```sh
+git clone https://github.com/ajxdp/mitm-ctl
 cd mitm-ctl
 sh install.sh
 ```
 
-脚本会：检查/安装依赖 → 生成 CA 证书 → 复制文件 → 初始化配置 → 设置开机自启 → 启动服务。
-
-### 方式二：手动
+**可选参数：**
 
 ```sh
-# 1) 依赖
-opkg update
-opkg install python3-light python3-openssl python3-cryptography openssl-util nftables tcpdump
+sh install.sh --mode=proxy      # 显式代理模式（不装 nft 规则，零副作用）
+sh install.sh --mode=gateway    # 透明模式（本机当网关，自动重定向 80/443）
+sh install.sh --check           # 只做依赖自检，不安装
+sh install.sh --uninstall       # 卸载
 
-# 2) 程序
-mkdir -p /usr/share/pktcap /usr/share/mitm /etc/mitm /etc/squid/ssl
-cp pktcap_server.py body.html panel.html index.html CHEATSHEET.md /usr/share/pktcap/
-cp mitm_proxy.py /usr/share/mitm/
-cp bin/mitm-ctl /usr/bin/ && chmod +x /usr/bin/mitm-ctl
-cp bin/mitm-nft.sh /usr/libexec/ && chmod +x /usr/libexec/mitm-nft.sh
-cp initd/mitm initd/pktcap /etc/init.d/ && chmod +x /etc/init.d/mitm /etc/init.d/pktcap
-
-# 3) CA 证书（10 年有效）
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout /etc/squid/ssl/mitm-ca.key -out /etc/squid/ssl/mitm-ca.crt \
-  -subj "/CN=Kwrt MITM CA/O=Kwrt Home"
-
-# 4) 开机自启 + 启动
-/etc/init.d/mitm enable && /etc/init.d/pktcap enable
-/usr/bin/mitm-ctl on
+# 覆盖默认值
+PKTCAP_PORT=8080 PKTCAP_PASS=你的密码 sh install.sh
 ```
 
-### 方式三：Docker（任意系统，无需 nftables）
+**运行模式怎么选：**
+
+| 系统 | 默认模式 | 说明 |
+|---|---|---|
+| OpenWrt / Kwrt | `gateway` | 它本来就是路由器，自动重定向设备流量，设备**无需任何设置** |
+| Debian / Ubuntu / 其它 | `proxy` | 客户端手动填代理 `主机IP:8080`，不碰系统网络配置 |
+
+脚本做的 10 件事：检查系统与 init → 探测依赖（含 python 模块级探测）→ 拷贝程序 → **生成/复用 CA 证书** → 写默认配置（幂等，不覆盖已有设置）→ 探测 LAN 网卡与网段 → 安装 procd/systemd 服务 → 透明模式下开 IP 转发 → 启动 → 自检并打印访问地址。
+
+> 安装是**幂等**的：重复执行不会覆盖你已改的配置，也不会重新生成 CA（否则已装证书的设备要重装）。
+
+### 方式二：Docker（任意系统，无需 nftables）
 
 ```sh
-# 构建并启动
+git clone https://github.com/ajxdp/mitm-ctl
+cd mitm-ctl
+
+# 构建 + 启动（推荐）
 docker compose up -d --build
+docker compose logs -f            # 看日志
+docker compose down               # 停止
 
 # 或者不用 compose
 docker build -t mitm-ctl .
 docker run -d --name mitm-ctl \
   -p 8080:8080 -p 8443:8443 -p 7690:7690 \
   -v mitm-data:/data \
+  -e PKTCAP_PASS=你的密码 \
+  --cap-add NET_RAW --cap-add NET_ADMIN \
   mitm-ctl
 ```
 
-> 容器内无法做 nftables 重定向，所以是**显式代理模式**：把客户端（浏览器/系统/App 的代理设置）指向 `主机IP:8080` 即可。
-> 这种模式下**所有功能都可用**（解密、折叠 JSON、图片预览、重放编辑器），只是"只抓某台设备"由你自己在客户端决定。
-> CA 证书在 `/data/ca/mitm-ca.crt`，用 `docker cp mitm-ctl:/data/ca/mitm-ca.crt .` 取出来装到设备上。
+**容器里怎么用（3 步）：**
+
+1. 访问 `http://宿主机IP:7690/cert` 下载 CA 证书，装到要抓包的设备上
+2. 把该设备的 **HTTP 和 HTTPS 代理都设为 `宿主机IP:8080`**
+3. 打开 `http://宿主机IP:7690/body` 看解密内容
+
+> 容器内无法做 nftables 重定向，所以是**显式代理模式**。功能一个不少（解密、折叠 JSON、图片预览、重放编辑器），只是"只抓某台设备"改由你在客户端决定。
+> CA 持久化在 `/data/ca/mitm-ca.crt`（命名卷），**别删卷**，否则设备要重新装证书。
+
+### 方式三：手动
+
+```sh
+# ---------- OpenWrt ----------
+opkg update
+opkg install python3-light python3-openssl python3-cryptography openssl-util nftables tcpdump
+mkdir -p /usr/share/pktcap /usr/share/mitm /etc/mitm /etc/squid/ssl
+cp pktcap_server.py body.html panel.html index.html CHEATSHEET.md /usr/share/pktcap/
+cp mitm_proxy.py /usr/share/mitm/
+cp bin/mitm-ctl /usr/bin/ && chmod +x /usr/bin/mitm-ctl
+cp bin/mitm-nft.sh /usr/libexec/ && chmod +x /usr/libexec/mitm-nft.sh
+cp initd/mitm initd/pktcap /etc/init.d/ && chmod +x /etc/init.d/mitm /etc/init.d/pktcap
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout /etc/squid/ssl/mitm-ca.key -out /etc/squid/ssl/mitm-ca.crt \
+  -subj "/CN=mitm-ctl CA/O=mitm-ctl"
+/etc/init.d/mitm enable && /etc/init.d/pktcap enable && /usr/bin/mitm-ctl on
+
+# ---------- Debian / Ubuntu ----------
+apt install -y python3 python3-cryptography openssl curl tcpdump
+mkdir -p /usr/share/pktcap /usr/share/mitm /etc/mitm/ca
+cp pktcap_server.py body.html panel.html index.html CHEATSHEET.md /usr/share/pktcap/
+cp mitm_proxy.py /usr/share/mitm/
+cp systemd/mitm.service systemd/pktcap.service /etc/systemd/system/
+# 编辑两个 service，把 __CONF__ / __CA_CRT__ / __CA_KEY__ 等占位符换成实际值
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout /etc/mitm/ca/mitm-ca.key -out /etc/mitm/ca/mitm-ca.crt \
+  -subj "/CN=mitm-ctl CA/O=mitm-ctl"
+systemctl daemon-reload && systemctl enable --now mitm pktcap
+```
+
 
 ---
 
@@ -98,21 +146,22 @@ docker run -d --name mitm-ctl \
 
 ### 1. 给设备装 CA 证书
 
-浏览器打开 **`http://<路由器IP>/cert.html`** → 下载 `.crt` →
-**设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书**。
+浏览器打开 **`http://<设备IP>:7690/cert`** → 下载 `.crt` → 装成 **CA 证书 / 受信任的根证书**。
 
-> 不装证书的话，被解密的 HTTPS 会报证书错误（这也是判断"是否解密成功"的方法）。
+> 证书页**不需要登录**（手机装证书时没法带认证），页面上直接给了 Android / iOS / Windows / macOS / Firefox 各自的步骤和 CA 指纹。
+> 不装证书的话，被解密的 HTTPS 会报证书错误（这也是判断"是否解密成功"的最快方法）。
 
 ### 2. 打开界面
 
 | 页面 | 地址 | 干什么 |
 |---|---|---|
-| **解密内容** | `http://<路由器IP>:7690/body` | 看解密后的请求/返回正文（**主界面**） |
-| 控制台 | `http://<路由器IP>:7690/panel` | 开关、范围、模式、日志、缓存管理 |
-| 抓包表格 | `http://<路由器IP>:7690/packets` | tcpdump 实时流量（需手动开始） |
-| 速查手册 | `http://<路由器IP>:7690/doc` | 项目自带的手册（本项目 `CHEATSHEET.md`） |
+| **解密内容** | `http://<设备IP>:7690/body` | 看解密后的请求/返回正文（**主界面**，也是 `/` 的默认落地页） |
+| 控制台 | `http://<设备IP>:7690/panel` | 开关、范围、模式、日志、缓存管理 |
+| 抓包表格 | `http://<设备IP>:7690/packets` | tcpdump 实时流量（需手动开始） |
+| 装证书 | `http://<设备IP>:7690/cert` | CA 证书下载 + 各平台安装步骤 |
+| 速查手册 | `http://<设备IP>:7690/doc` | 项目自带的手册（本项目 `CHEATSHEET.md`） |
 
-默认账号密码 **`root` / `root`**（在 `initd/pktcap` 里改 `PKTCAP_USER` / `PKTCAP_PASS`）。
+默认账号密码 **`root` / `root`**（安装时用 `PKTCAP_PASS=xxx` 覆盖，或改 `initd/pktcap`、`systemd/pktcap.service`）。
 
 从 LuCI 进：**服务 → 流量抓包**，默认落到「解密内容」。
 
@@ -120,6 +169,8 @@ docker run -d --name mitm-ctl \
 
 控制台 → **① 抓哪些设备**（建议先只选自己那台）→ **② ③ 解密范围** → 保存。
 然后回 `/body`，让设备产生点流量即可看到。
+
+> **显式代理模式（Docker / Debian 默认）**：跳过上面这步，直接在客户端把 HTTP+HTTPS 代理设为 `设备IP:8080` 就行。
 
 ---
 
@@ -189,7 +240,7 @@ curl -u root:root -X POST -H 'Content-Type: application/json' \
 
 | 层 | 用了什么 |
 |---|---|
-| 系统 | OpenWrt 25.12 / Kwrt（`MT7981` 双核 aarch64，512MB 内存足够） |
+| 系统 | OpenWrt 25.12 / Kwrt（`MT7981` 双核 aarch64，512MB 内存足够）；也支持 Debian/Ubuntu 与 Docker |
 | 运行时 | Python 3.13 `python3-light` + `python3-openssl` + `python3-cryptography` |
 | 拦截 | `nftables`（nat prerouting 重定向 80→8080、443→8443，**drop UDP 443 禁用 QUIC**） |
 | 代理 | 自写 `mitm_proxy.py`：裸 `socket` + `ssl` 做 CONNECT 中转、动态签发叶子证书 |
@@ -220,31 +271,50 @@ curl -u root:root -X POST -H 'Content-Type: application/json' \
 
 ```
 mitm-ctl/
-├── install.sh / uninstall.sh      安装 / 卸载
-├── README.md · LICENSE · .gitignore
+├── install.sh / uninstall.sh      一键安装 / 卸载（自动识别 OpenWrt / Debian）
+├── README.md · LICENSE
+├── .gitattributes · .gitignore     强制 LF（脚本要跑在 busybox 上）
 ├── pktcap_server.py               Web 服务 + API + 抓包（→ /usr/share/pktcap/）
 ├── mitm_proxy.py                  解密代理（→ /usr/share/mitm/）
 ├── body.html                      解密内容页
 ├── panel.html                     控制台
 ├── index.html                     流量表格页
 ├── CHEATSHEET.md                  速查手册（也可在 /doc 看）
+├── Dockerfile                     容器镜像
+├── docker-compose.yml             一键跑容器
+├── docker/entrypoint.sh           容器入口（生成 CA + 拉起两个进程）
 ├── bin/
-│   ├── mitm-ctl                   总控 CLI（→ /usr/bin/）
-│   └── mitm-nft.sh                nftables 规则（→ /usr/libexec/）
-├── initd/
-│   ├── mitm                       procd 服务（→ /etc/init.d/）
+│   ├── mitm-ctl                   总控 CLI（→ /usr/bin/，兼容 procd/systemd）
+│   ├── mitm-nft.sh                nftables 规则（→ /usr/libexec/）
+│   └── auto-bypass.default.txt    证书固定域名兜底名单
+├── initd/                         OpenWrt procd 服务（→ /etc/init.d/）
+│   ├── mitm
 │   └── pktcap
+├── systemd/                       Debian/Ubuntu systemd 服务（→ /etc/systemd/system/）
+│   ├── mitm.service
+│   └── pktcap.service
+├── tools/
+│   ├── deploy.sh                  **改完代码一键部署**（归一化 LF + 上传 + 重启 + 校验）
+│   ├── smoke-test.sh              安装后回归验证（页面/接口/开关/解密链路）
+│   ├── gen_preview.py             离线预览生成器（开发用）
+│   └── test.pcap                  抓包页测试数据
 ├── docs/
 │   ├── 使用说明.md
-│   ├── 技术总结与迁移方案.md        技术栈 / 难点 / 迁移与打包方案
-│   └── gen_preview.py             离线预览生成器（开发用）
-├── tools/test.pcap                抓包页测试数据
+│   └── 技术总结与迁移方案.md        技术栈 / 难点 / 迁移与打包方案
 └── legacy/https.html              已废弃页面（保留备查）
 ```
 
 ---
 
 ## 🔄 改完代码怎么部署
+
+**推荐用自带脚本**（会先统一换行符 —— 见下方警告 —— 再上传、重启、跑一遍页面自检）：
+
+```sh
+sh tools/deploy.sh root@10.0.0.1
+```
+
+手动等价操作：
 
 ```sh
 # 语法自检
@@ -261,7 +331,15 @@ ssh root@10.0.0.1 '/etc/init.d/mitm restart'
 ```
 
 > `mitm_proxy.py` → 重启 `mitm`；`pktcap_server.py` / `*.html` → 重启 `pktcap`。
-> 细节与故障排查见 `CHEATSHEET.md`（网页版 `/doc`）。
+> Debian 下把 `/etc/init.d/x restart` 换成 `systemctl restart x`。
+
+> ⚠️ **Windows 开发必看**：编辑器/工具很容易把文件写成 **CRLF**，而 CRLF 的 shell 脚本拷到
+> busybox 上会直接报 `not found` / 语法错误。仓库已用 `.gitattributes` 锁定 LF，
+> 但**工作区**仍可能被写脏 —— `tools/deploy.sh` 每次都会先归一化，建议养成用它部署的习惯。
+> 自查：`git ls-files --eol | grep w/crlf` 应为空。
+
+> `tools/smoke-test.sh` 可在安装后跑一遍完整回归（5 个页面 + 证书页 + 解密链路 + 开关 + 主动发包）：
+> `ssh root@10.0.0.1 'sh /tmp/smoke.sh'`
 
 ---
 
@@ -273,7 +351,7 @@ ssh root@10.0.0.1 '/etc/init.d/mitm restart'
 **某个 App 白屏 / 连不上？** 它做了证书固定，被自动放行的是"能连但不记内容"。
 想强制看内容 → 控制台选「仅解密指定域名」填它 —— 但**它可能直接连不上**，这是二选一。
 
-**浏览器一直报证书错误？** 手机/电脑没装 CA，去 `http://<路由器IP>/cert.html`。
+**浏览器一直报证书错误？** 手机/电脑没装 CA，去 `http://<设备IP>:7690/cert`（这个页面不需要登录）。
 
 **其他设备受影响吗？** 解密开启时流量会过一道代理（透传很轻），QUIC 被禁用会退回 TCP。
 想 100% 零影响 → 控制台选「只抓指定设备」填自己 IP，其他设备在 nft 层就被排除。

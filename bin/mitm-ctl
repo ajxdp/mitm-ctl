@@ -1,43 +1,107 @@
 #!/bin/sh
-# 解密代理总控：on = 开启(拦截+解密) / off = 暂停拦截(代理留着) / stop = 完全停止(最省)
+# mitm-ctl —— 解密代理总控
+#
+#   on      开启解密（起代理 + 下发重定向规则）
+#   off     暂停拦截（清规则，所有设备恢复直连；代理进程留着，可秒开）
+#   stop    完全停止（清规则 + 停代理，最省 CPU/内存）
+#   all     解密范围 = 整个 LAN
+#   only <IP|CIDR>   解密范围 = 指定设备
+#   status  查看当前状态
+#
+# 同时兼容 OpenWrt(procd) 与 Debian/Ubuntu(systemd)；显式代理模式下无 nft，on/off 等价于起停进程。
 TARGETS=/etc/squid/mitm-targets
+NFT_SH=/usr/libexec/mitm-nft.sh
+CONF=/etc/mitm
 
-ensure_up() { /etc/init.d/mitm start >/dev/null 2>&1; sleep 1; }
+has_nft() { [ -x "$NFT_SH" ] && command -v nft >/dev/null 2>&1; }
+is_proxy_mode() { [ ! -f "$CONF/tproxy" ]; }
+
+svc_start() {
+	if [ -f /etc/init.d/mitm ] && [ -f /etc/rc.common ]; then
+		/etc/init.d/mitm start >/dev/null 2>&1
+	elif command -v systemctl >/dev/null 2>&1; then
+		systemctl start mitm >/dev/null 2>&1
+	elif [ -f /etc/init.d/mitm ]; then
+		/etc/init.d/mitm start >/dev/null 2>&1
+	fi
+}
+
+svc_stop() {
+	if [ -f /etc/init.d/mitm ] && [ -f /etc/rc.common ]; then
+		/etc/init.d/mitm stop >/dev/null 2>&1
+	elif command -v systemctl >/dev/null 2>&1; then
+		systemctl stop mitm >/dev/null 2>&1
+	elif [ -f /etc/init.d/mitm ]; then
+		/etc/init.d/mitm stop >/dev/null 2>&1
+	fi
+	# 兜底：服务框架没接住时直接杀进程
+	for d in /proc/[0-9]*; do
+		c=$(cat "$d/comm" 2>/dev/null) || continue
+		[ "$c" = "python3" ] || continue
+		tr '\0' ' ' < "$d/cmdline" 2>/dev/null | grep -q mitm_proxy && kill "$(basename "$d")" 2>/dev/null
+	done
+}
+
+ensure_up() {
+	# 代理没起来就起（否则规则会把流量打到没人监听的端口）
+	svc_start
+	sleep 1
+}
 
 case "$1" in
 	on)
 		ensure_up
-		/usr/libexec/mitm-nft.sh apply
-		echo "解密已开启（拦截 + 解密）"
+		has_nft && "$NFT_SH" apply
+		if is_proxy_mode; then
+			echo "解密已开启（显式代理模式，客户端代理指向本机 8080）"
+		else
+			echo "解密已开启（拦截 + 解密）"
+		fi
 		;;
 	off)
-		/usr/libexec/mitm-nft.sh clear
-		echo "已暂停拦截：所有设备恢复直连（代理进程仍在，随时可秒开）"
+		if has_nft; then
+			"$NFT_SH" clear
+			echo "已暂停拦截：所有设备恢复直连（代理进程仍在，随时可秒开）"
+		else
+			svc_stop
+			echo "已停止代理（显式代理模式，客户端会连不上）"
+		fi
 		;;
 	stop)
-		/usr/libexec/mitm-nft.sh clear
-		/etc/init.d/mitm stop >/dev/null 2>&1
+		[ -x "$NFT_SH" ] && "$NFT_SH" clear
+		svc_stop
 		echo "解密已完全停止（规则已清、进程已停，最省性能）"
 		;;
 	all)
 		echo "10.0.0.0/24" > "$TARGETS"
-		ensure_up                      # 关键：没有这一步，规则会把流量打到没人监听的端口
-		/usr/libexec/mitm-nft.sh apply
+		ensure_up
+		has_nft && "$NFT_SH" apply
 		echo "解密范围: 整个 LAN"
 		;;
 	only)
 		[ -z "$2" ] && { echo "用法: mitm-ctl only <IP|CIDR>"; exit 1; }
 		echo "$2" > "$TARGETS"
 		ensure_up
-		/usr/libexec/mitm-nft.sh apply
+		has_nft && "$NFT_SH" apply
 		echo "解密范围: $2"
 		;;
 	status)
-		echo "== 代理进程: $(for d in /proc/[0-9]*; do cat $d/comm 2>/dev/null; done | grep -c '^python3$') 个 python3 =="
-		netstat -ltn 2>/dev/null | grep -E "8080|8443" | sed "s/^/  /"
-		echo "== 解密范围 =="; cat "$TARGETS" 2>/dev/null | sed "s/^/  /"
-		echo "== nft 规则 =="; nft list table inet mitm 2>/dev/null | grep -E "redirect|drop" | sed "s/^/  /"
-		echo "== CA =="; openssl x509 -in /etc/squid/ssl/mitm-ca.crt -noout -subject 2>/dev/null | sed "s/^/  /"
+		printf "%-16s %s\n" "模式" "$(is_proxy_mode && echo '显式代理(proxy)' || echo '透明重定向(gateway)')"
+		if command -v systemctl >/dev/null 2>&1 && [ -f /etc/systemd/system/mitm.service ]; then
+			printf "%-16s %s\n" "代理服务" "$(systemctl is-active mitm 2>/dev/null)"
+		else
+			printf "%-16s %s\n" "代理服务" "$(ps w 2>/dev/null | grep -v grep | grep -q mitm_proxy && echo running || echo stopped)"
+		fi
+		netstat -ltn 2>/dev/null | grep -E "8080|8443" | sed 's/^/  /'
+		printf "%-16s %s\n" "解密范围" "$(cat "$TARGETS" 2>/dev/null | tr '\n' ' ')"
+		printf "%-16s %s\n" "域名模式" "$(cat "$CONF/mode" 2>/dev/null)"
+		if has_nft; then
+			printf "%-16s %s\n" "nft 规则" "$(nft list table inet mitm 2>/dev/null | grep -c redirect) 条 redirect"
+		fi
+		printf "%-16s %s\n" "日志记录" "$([ "$(cat "$CONF/log-enable" 2>/dev/null)" = "0" ] && echo 关 || echo 开)"
+		printf "%-16s %s\n" "CA 证书" "$(ls /etc/mitm/ca/mitm-ca.crt /etc/squid/ssl/mitm-ca.crt 2>/dev/null | head -1)"
 		;;
-	*) echo "用法: mitm-ctl on|off|stop|all|only <IP>|status" ;;
+	*)
+		echo "用法: mitm-ctl on|off|stop|all|only <IP>|status"
+		;;
 esac

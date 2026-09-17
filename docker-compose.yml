@@ -1,25 +1,53 @@
-# mitm-ctl —— 显式代理模式（把客户端代理指向 主机IP:8080）
+# ============================================================================
+#  mitm-ctl —— 一键跑起来（显式代理模式，不碰宿主机网络配置）
+#
+#    docker compose up -d --build      # 构建 + 启动
+#    docker compose logs -f            # 看日志
+#    docker compose down               # 停止（数据保留在命名卷里）
+#
+#  然后：
+#    1) 访问 http://<宿主机IP>:7690/cert 下载 CA 证书，装到要抓包的设备上
+#    2) 把该设备的 HTTP + HTTPS 代理都设为 <宿主机IP>:8080
+#    3) 打开 http://<宿主机IP>:7690/body 看解密内容
+# ============================================================================
 services:
   mitm-ctl:
     build: .
     image: mitm-ctl:latest
     container_name: mitm-ctl
     restart: unless-stopped
+
     ports:
-      - "8080:8080"    # HTTP 代理
-      - "8443:8443"    # HTTPS 代理
-      - "7690:7690"    # 网页控制台
+      - "8080:8080"     # HTTP/HTTPS 代理端口（客户端填这个）
+      - "8443:8443"     # 备用 HTTPS 代理端口
+      - "7690:7690"     # 网页控制台 / 解密内容 / 证书下载
+
     volumes:
-      - mitm-data:/data      # CA 证书 + 配置 + 日志 + blob 缓存
+      # /data 保存 CA 证书与配置 —— 必须持久化，否则重建容器后设备要重新装证书
+      - mitm-data:/data
+
     environment:
       PKTCAP_PORT: "7690"
       PKTCAP_USER: "root"
-      PKTCAP_PASS: "root"    # ← 暴露到公网前务必修改
-    # 演示机资源很小也够跑
+      PKTCAP_PASS: "root"        # ← 暴露到公网前务必改成强口令
+      TZ: "Asia/Shanghai"
+
+    # 「流量抓包」页需要 tcpdump 抓包权限；不需要该页可删掉这两行
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+    # 演示机资源很小也够跑（实测常驻内存约 40MB）
     deploy:
       resources:
         limits:
           memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 volumes:
   mitm-data:

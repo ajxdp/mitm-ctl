@@ -1,0 +1,27 @@
+[Unit]
+Description=mitm-ctl HTTPS 解密代理
+Documentation=https://github.com/ajxdp/mitm-ctl
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/share/mitm/mitm_proxy.py
+Environment=MITM_CONF=__CONF__
+Environment=MITM_CA_CERT=__CA_CRT__
+Environment=MITM_CA_KEY=__CA_KEY__
+Environment=MITM_CERT_DIR=/tmp/mitm-certs
+Environment=MITM_BLOB_DIR=/tmp/mitm-blobs
+Restart=always
+RestartSec=5
+# 透明模式下才下发重定向规则（proxy 模式无 __CONF__/tproxy 文件，脚本内会跳过）
+ExecStartPost=/bin/sh -c 'if [ -f __CONF__/tproxy ]; then /usr/libexec/mitm-nft.sh apply; fi'
+ExecStopPost=/bin/sh -c '/usr/libexec/mitm-nft.sh clear || true'
+# 解密大响应时会有瞬时内存占用，给个软上限防跑飞
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mitm-proxy
+
+[Install]
+WantedBy=multi-user.target

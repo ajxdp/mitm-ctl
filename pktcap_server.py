@@ -51,7 +51,7 @@ MITM_MODE = os.path.join(MITM_CONF, "mode")
 MITM_DOMAINS = os.path.join(MITM_CONF, "domains.txt")
 MITM_IFACES = os.path.join(MITM_CONF, "ifaces")
 MITM_BYPASS = os.path.join(MITM_CONF, "auto-bypass.txt")
-MITM_TARGETS = "/etc/squid/mitm-targets"
+MITM_TARGETS = os.environ.get("MITM_TARGETS", "/etc/squid/mitm-targets")
 KEEPALIVE_FILE = os.environ.get("PKTCAP_KEEPALIVE", "/etc/pktcap-keepalive")
 IDLE_STOP_SEC = int(os.environ.get("PKTCAP_IDLE_STOP", "60"))   # 无人在看多久后自动停抓包
 BODY_HISTORY = int(os.environ.get("PKTCAP_BODY_HISTORY", "60"))  # 进入页面时回放多少条
@@ -725,6 +725,90 @@ def serve_sse(conn):
         pass
     finally:
         CAP.remove_client(conn)
+
+
+def ca_cert_path():
+    return os.environ.get("MITM_CA_CERT", "/etc/squid/ssl/mitm-ca.crt")
+
+
+def ca_key_path():
+    return os.environ.get("MITM_CA_KEY", "/etc/squid/ssl/mitm-ca.key")
+
+
+CERT_PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>安装 CA 证书</title>
+<style>body{font:16px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;padding:24px;
+background:#f5f6f8;color:#1f2430}h1{font-size:19px;margin:0 0 4px}p.sub{color:#6b7280;font-size:13px;margin:0 0 18px}
+a.btn{display:block;padding:16px;margin:12px 0;background:#2f6fed;color:#fff;text-decoration:none;border-radius:10px;
+text-align:center;font-weight:600}a.alt{background:#fff;color:#1f2430;border:1px solid #d7dbe3}
+.note{color:#6b7280;font-size:13px;margin-top:18px;background:#fff;border:1px solid #eef0f4;border-radius:10px;padding:14px}
+.note b{color:#1f2430}.fp{font:12px/1.5 ui-monospace,Consolas,monospace;word-break:break-all;color:#6b7280}
+a.back{color:#2f6fed;font-size:13px;text-decoration:none}</style></head><body>
+<h1>安装解密根证书</h1>
+<p class="sub">装好后，本机浏览器访问的 HTTPS 才能看到明文（不装的话会提示证书错误）</p>
+<a class="btn" href="/mitm-ca.crt">① 下载证书 .crt（推荐）</a>
+<a class="btn alt" href="/mitm-ca.pem">② 备用格式 .pem</a>
+<div class="note">
+<b>Android</b>：设置 → 安全 → 加密与凭据 → 安装证书 → <b>CA 证书</b>，选刚下载的文件
+（Android 7+ 部分 App 不信任用户证书，属系统限制）<br>
+<b>iOS</b>：下载后用 AirDrop/邮件点开 → 设置 → 通用 → VPN与设备管理 里信任 →
+再到 通用 → 关于本机 → 证书信任设置 打开开关<br>
+<b>Windows</b>：双击 .crt → 安装证书 → 本地计算机 → 受信任的根证书颁发机构<br>
+<b>macOS</b>：双击导入"钥匙串访问" → 系统 → 右键"显示简介" → 信任 → 始终信任<br>
+<b>Firefox</b>：设置 → 隐私与安全 → 证书 → 查看证书 → 导入（自带信任库，需单独装）
+</div>
+<div class="note">
+CA 指纹（SHA-256）：<br><span class="fp">{fp}</span><br>
+有效期至：{notafter}
+</div>
+<p><a class="back" href="/body">← 返回解密内容页</a></p>
+</body></html>"""
+
+
+def _ca_fingerprint():
+    """取 CA 指纹与有效期；失败就返回占位文案。"""
+    fp, na = "（读取失败）", "（未知）"
+    try:
+        import hashlib
+        raw = open(ca_cert_path(), "rb").read()
+        der = ssl.PEM_cert_to_DER_cert(raw.decode("utf-8", "replace"))
+        h = hashlib.sha256(der).hexdigest().upper()
+        fp = ":".join(h[i:i + 2] for i in range(0, len(h), 2))
+    except Exception:
+        pass
+    try:
+        out = _sh("openssl x509 -in %s -noout -enddate 2>/dev/null" % ca_cert_path())
+        if "=" in out:
+            na = out.strip().split("=", 1)[1]
+    except Exception:
+        pass
+    return fp, na
+
+
+def serve_cert_page(conn):
+    fp, na = _ca_fingerprint()
+    body = CERT_PAGE.replace("{fp}", _esc(fp)).replace("{notafter}", _esc(na)).encode("utf-8")
+    conn.sendall(b"HTTP/1.1 200 OK\r\n"
+                 b"Content-Type: text/html; charset=utf-8\r\n"
+                 b"Cache-Control: no-cache\r\nConnection: close\r\n"
+                 b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+
+
+def serve_ca_file(conn, name):
+    """下发 CA 证书文件（不要求登录：手机装证书时没法带 Basic 认证）。"""
+    p = ca_cert_path()
+    try:
+        body = open(p, "rb").read()
+    except Exception:
+        conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                     b"Connection: close\r\n\r\n")
+        return
+    ctype = ("application/x-x509-ca-cert" if name.endswith(".crt")
+             else "application/x-pem-file")
+    conn.sendall(("HTTP/1.1 200 OK\r\nContent-Type: " + ctype + "\r\n"
+                  "Content-Disposition: attachment; filename=\"" + name + "\"\r\n"
+                  "Cache-Control: no-cache\r\nConnection: close\r\n"
+                  "Content-Length: " + str(len(body)) + "\r\n\r\n").encode("utf-8") + body)
 
 
 def serve_file(conn, path, ctype="text/html"):
@@ -1530,29 +1614,55 @@ def mitm_status():
     }
 
 
-def ca_url():
-    """证书下载页在 80 端口（uhttpd/nginx 托管 /www），不在本服务端口上。"""
-    ip = ""
+def _looks_like_ip(s):
+    """只接受纯 IPv4/IPv6 字面量。命令失败时会把报错文本吐回来，绝不能当 IP 用。"""
+    s = (s or "").strip()
+    if not s or len(s) > 45 or any(c in s for c in " \t\n\r:/\\?"):
+        return False
     try:
-        ip = _sh("uci get network.lan.ipaddr 2>/dev/null").strip()
+        socket.inet_pton(socket.AF_INET, s)
+        return True
     except Exception:
         pass
-    ip = ip.split("/")[0].strip()          # uci 可能返回 "10.0.0.1/24"
-    if not ip:
+    try:
+        socket.inet_pton(socket.AF_INET6, s)
+        return True
+    except Exception:
+        return False
+
+
+def ca_url():
+    """内置证书下载页：http://<本机LAN IP>:<端口>/cert
+    不再依赖 nginx/uhttpd，Debian / Docker 上同样可用。"""
+    cands = []
+    try:
+        cands.append(_sh("uci get network.lan.ipaddr 2>/dev/null").split("/")[0])
+    except Exception:
+        pass
+    for cmd in (("ip -4 addr show %s 2>/dev/null | awk '/inet /{print $2}' "
+                 "| cut -d/ -f1 | head -1") % IFACE,
+                "ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}'",
+                "hostname -I 2>/dev/null | awk '{print $1}'"):
         try:
-            ip = _sh("ip -4 addr show %s 2>/dev/null | "
-                     "awk '/inet /{print $2}' | cut -d/ -f1 | head -1" % IFACE).strip()
+            cands.append(_sh(cmd))
         except Exception:
             pass
+    # UDP connect 探测（不实际发包）作为兜底
+    try:
+        s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s_.connect(("8.8.8.8", 80))
+        cands.append(s_.getsockname()[0])
+        s_.close()
+    except Exception:
+        pass
+    ip = ""
+    for c in cands:
+        if _looks_like_ip(c):
+            ip = c.strip()
+            break
     if not ip:
-        try:
-            s_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s_.connect(("8.8.8.8", 80))
-            ip = s_.getsockname()[0]
-            s_.close()
-        except Exception:
-            ip = "127.0.0.1"
-    return "http://%s/cert.html" % ip
+        ip = "127.0.0.1"
+    return "http://%s:%d/cert" % (ip, PORT)
 
 
 def _ctl(*args):
@@ -1668,6 +1778,15 @@ def client_thread(conn):
                 break
             body += ch
 
+        # 证书下载页/文件不鉴权：手机装 CA 时无法带 Basic 认证
+        if path.startswith("/cert") or path.startswith("/mitm-ca."):
+            nm = path.split("?")[0].rsplit("/", 1)[-1]
+            if nm in ("mitm-ca.crt", "mitm-ca.pem"):
+                serve_ca_file(conn, nm)
+            else:
+                serve_cert_page(conn)
+            return
+
         if USER:
             ok = False
             a = headers.get("authorization", "")
@@ -1701,7 +1820,7 @@ def client_thread(conn):
             send_json(conn, res)
         elif path.startswith("/stream"):
             serve_sse(conn)
-        if path.startswith("/api/ping"):
+        elif path.startswith("/api/ping"):
             # 解密页心跳：页面可见时每 30s 来一次；关掉/切后台就停，用于「无人监听自动关闭」
             try:
                 key = conn.getpeername()[0]
